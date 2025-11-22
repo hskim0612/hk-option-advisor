@@ -6,24 +6,51 @@ from scipy.stats import norm
 from datetime import datetime
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+from io import BytesIO
+import base64
+
+# === [앱 보안 설정] ===
+# 박사님만 접속할 수 있도록 비밀번호를 설정합니다.
+APP_PASSWORD = "1979"  # 원하는 비밀번호로 변경하세요!
 
 # === [페이지 기본 설정] ===
 st.set_page_config(
-    page_title="HK 옵션투자자문 (Expert)",
-    page_icon="💎",
+    page_title="HK 옵션투자자문 (Expert v17.9)",
+    page_icon="📊",
     layout="wide"
 )
 
-# 차트 스타일 설정
+# 차트 스타일
 plt.style.use('seaborn-v0_8-darkgrid')
 plt.rcParams['font.family'] = 'sans-serif'
 
-# === [1] 데이터 수집 및 가공 (캐싱 적용) ===
-# 30분(1800초) 동안은 데이터를 저장해두고, 그 이후엔 새로 가져옵니다.
-@st.cache_data(ttl=1800)
+# === [0] 로그인 화면 (보안 기능) ===
+def check_password():
+    """비밀번호가 맞는지 확인하는 함수"""
+    if "password_correct" not in st.session_state:
+        st.session_state.password_correct = False
+
+    if st.session_state.password_correct:
+        return True
+
+    st.title("🔒 HK Advisory 보안 접속")
+    password = st.text_input("비밀번호를 입력하세요", type="password")
+    
+    if st.button("로그인"):
+        if password == APP_PASSWORD:
+            st.session_state.password_correct = True
+            st.rerun()
+        else:
+            st.error("비밀번호가 틀렸습니다.")
+    return False
+
+if not check_password():
+    st.stop()  # 비밀번호 틀리면 여기서 멈춤
+
+# === [1] 데이터 수집 및 가공 (v17.9 로직 동일) ===
+@st.cache_data(ttl=1800)  # 30분마다 자동 갱신
 def get_market_data():
     qqq = yf.Ticker("QQQ")
-    # 2년치 데이터
     hist = qqq.history(period="2y")
     
     # 이동평균선
@@ -50,7 +77,7 @@ def get_market_data():
     rs = gain / loss
     hist['RSI'] = 100 - (100 / (1 + rs))
     
-    # 거래량 이동평균
+    # 거래량 (20일 평균)
     hist['Vol_MA20'] = hist['Volume'].rolling(window=20).mean()
     
     # VIX
@@ -61,7 +88,10 @@ def get_market_data():
     curr_vix = vix_hist['Close'].iloc[-1]
     prev_vix = vix_hist['Close'].iloc[-2]
     
-    # IV 추출 (실패시 VIX 대용)
+    # 거래량 비율
+    vol_pct = (curr['Volume'] / curr['Vol_MA20']) * 100
+
+    # IV (옵션 체인 실패시 VIX 대용)
     try:
         dates = qqq.options
         chain = qqq.option_chain(dates[1])
@@ -70,206 +100,418 @@ def get_market_data():
         current_iv = curr_vix / 100.0
 
     return {
-        'price': curr['Close'], 'price_prev': prev['Close'],
+        'price': curr['Close'], 'price_prev': prev['Close'], 'open': curr['Open'],
         'ma20': curr['MA20'], 'ma50': curr['MA50'], 'ma200': curr['MA200'],
         'rsi': curr['RSI'], 'rsi_prev': prev['RSI'],
         'bb_upper': curr['BB_Upper'], 'bb_lower': curr['BB_Lower'], 'bb_lower_prev': prev['BB_Lower'],
         'macd': curr['MACD'], 'signal': curr['Signal'],
         'macd_prev': prev['MACD'], 'signal_prev': prev['Signal'],
-        'volume': curr['Volume'], 'vol_ma20': curr['Vol_MA20'],
+        'volume': curr['Volume'], 'vol_ma20': curr['Vol_MA20'], 'vol_pct': vol_pct,
         'vix': curr_vix, 'vix_prev': prev_vix,
         'iv': current_iv,
         'hist': hist, 'vix_hist': vix_hist
     }
 
-# === [2] 전문가 스코어링 로직 ===
+# === [2] 전문가 스코어링 로직 (v17.9 동일) ===
 def analyze_expert_logic(d):
-    # 계절 판단
-    if d['price'] > d['ma50'] and d['price'] > d['ma200']: season = "SUMMER ☀️"
-    elif d['price'] < d['ma50'] and d['price'] > d['ma200']: season = "AUTUMN 🍂"
-    elif d['price'] < d['ma50'] and d['price'] < d['ma200']: season = "WINTER ❄️"
-    else: season = "SPRING 🌱"
+    # 1. 계절 판단
+    if d['price'] > d['ma50'] and d['price'] > d['ma200']: season = "SUMMER"
+    elif d['price'] < d['ma50'] and d['price'] > d['ma200']: season = "AUTUMN"
+    elif d['price'] < d['ma50'] and d['price'] < d['ma200']: season = "WINTER"
+    else: season = "SPRING"
     
     score = 0
-    reasons = [] # 점수 근거 기록
+    log = {} 
     
     # A. RSI
-    if d['rsi'] > 70:
-        pts = -1 if "SUMMER" in season else -3 if "AUTUMN" in season else -5
-        score += pts
-        reasons.append(f"RSI 과열({d['rsi']:.1f}): {pts}점")
-    elif d['rsi'] < 30:
-        pts = 5 if "SUMMER" in season else 4 if "AUTUMN" in season else 0
-        score += pts
-        reasons.append(f"RSI 과매도({d['rsi']:.1f}): {pts}점")
-    
-    # Expert: RSI 탈출
     if d['rsi_prev'] < 30 and d['rsi'] >= 30:
-        pts = 6 if "WINTER" in season else 5
+        pts = 6 if season == "WINTER" else 5
         score += pts
-        reasons.append(f"🔥 RSI 30 상향 돌파: +{pts}점")
+        log['rsi'] = 'escape'
+    elif d['rsi'] > 70:
+        pts = -1 if season == "SUMMER" else -3 if season == "AUTUMN" else -5 if season == "WINTER" else -2
+        score += pts
+        log['rsi'] = 'over'
+    elif 45 <= d['rsi'] <= 65:
+        pts = 1 if season == "SUMMER" or season == "SPRING" else 0 if season == "AUTUMN" else -1
+        score += pts
+        log['rsi'] = 'neutral'
+    elif d['rsi'] < 30:
+        pts = 5 if season == "SUMMER" else 4 if season == "AUTUMN" or season == "SPRING" else 0
+        score += pts
+        log['rsi'] = 'under'
+    else:
+        log['rsi'] = 'none'
 
     # B. VIX
-    if d['vix'] > 35:
-        if d['vix'] > d['vix_prev']:
-            pts = -5
-            reasons.append("VIX 패닉 상승중: -5점")
+    if d['vix'] > 35: 
+        if d['vix'] < d['vix_prev']:
+            pts = 7 if season == "WINTER" else 0 
+            score += pts
+            log['vix'] = 'peak_out'
         else:
-            pts = 7
-            reasons.append("🎯 VIX 피크아웃(꺾임): +7점")
+            pts = -5 if season == "WINTER" else -6 if season == "AUTUMN" else -5
+            score += pts
+            log['vix'] = 'panic_rise'
+    elif d['vix'] < 20:
+        pts = -2 if season == "WINTER" else 0
         score += pts
-    elif 25 <= d['vix'] <= 35:
-        pts = 2 if "WINTER" in season else -3
+        log['vix'] = 'stable'
+    elif 20 <= d['vix'] <= 35:
+        pts = 2 if season == "WINTER" else -1 if season == "SPRING" else -3 if season == "SUMMER" else -4
         score += pts
-        reasons.append(f"VIX 공포구간: {pts}점")
+        log['vix'] = 'fear'
+    else:
+        log['vix'] = 'none'
 
     # C. Bollinger
     if d['price_prev'] < d['bb_lower_prev'] and d['price'] >= d['bb_lower']:
-        pts = 5 if "WINTER" in season else 4
+        pts = 5 if season == "WINTER" else 4
         score += pts
-        reasons.append(f"↩️ 볼린저밴드 내부 복귀: +{pts}점")
+        log['bb'] = 'return'
+    elif d['price'] < d['bb_lower']:
+        pts = -2 if season == "WINTER" else 3 if season == "SUMMER" else 2 if season == "AUTUMN" else 1
+        score += pts
+        log['bb'] = 'out'
+    else:
+        log['bb'] = 'in'
 
     # D. 추세
     if d['price'] > d['ma20']:
+        pts = 3 if season == "WINTER" or season == "SPRING" else 2
+        score += pts
+        log['trend'] = 'up'
+    else:
+        log['trend'] = 'down'
+
+    # E. 거래량
+    if d['volume'] > d['vol_ma20'] * 1.5: 
+        pts = 3 if season == "WINTER" or season == "AUTUMN" else 2
+        score += pts
+        log['vol'] = 'explode'
+    else:
+        log['vol'] = 'normal'
+
+    # F. MACD
+    if d['macd_prev'] < 0 and d['macd'] >= 0:
         pts = 3
         score += pts
-        reasons.append("20일선 회복: +3점")
+        log['macd'] = 'break_up'
+    elif d['macd_prev'] > 0 and d['macd'] <= 0:
+        pts = -3
+        score += pts
+        log['macd'] = 'break_down'
+    elif d['macd'] > 0:
+        pts = 1
+        score += pts
+        log['macd'] = 'above'
+    else:
+        pts = -1
+        score += pts
+        log['macd'] = 'below'
 
-    return season, score, reasons
+    return season, score, log
 
 def determine_action(score, season):
     if score >= 10:
-        return -0.20, "💎 강력 매수 (Strong Buy)", "success"
+        return -0.30, "💎 강력 매수 (Aggressive)"
     elif 5 <= score < 10:
-        return -0.20, "⚖️ 매수 우위 (Buy)", "info"
+        return -0.20, "⚖️ 매수 우위 (Standard)"
     elif 0 <= score < 5:
-        return -0.15, "🛡️ 중립/관망 (Neutral)", "warning"
-    elif -5 <= score < 0:
-        return -0.10, "⚠️ 위험 관리 (Warning)", "error"
+        return -0.10, "🛡️ 중립/관망 (Very Safe)"
     else:
-        return None, "⛔ 진입 금지 (No Entry)", "error"
+        return None, "⛔ 진입 금지 (No Entry)"
 
-# === [3] 전략 계산 (블랙숄즈) ===
+# === [3] 전략 탐색 (블랙숄즈) ===
 def calculate_put_delta(S, K, T, r, sigma):
     if T <= 0 or sigma <= 0: return -0.5
     d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
     return norm.cdf(d1) - 1
 
-def find_best_option(price, iv, target_delta, target_dte, width):
+def find_best_option(price, iv, target_delta):
     if target_delta is None: return None
     
-    T = target_dte / 365.0
-    r = 0.045
-    best_strike = 0
-    min_diff = 1.0
-    found_delta = 0
+    # 설정값 (코드 상단 변수 대체)
+    TARGET_DTE_MIN = 45
+    SPREAD_WIDTH = 10
     
-    for strike in range(int(price * 0.5), int(price)):
-        d = calculate_put_delta(price, strike, T, r, iv)
-        diff = abs(d - target_delta)
-        if diff < min_diff:
-            min_diff = diff
-            best_strike = strike
-            found_delta = d
-            
-    return {
-        'short': best_strike,
-        'long': best_strike - width,
-        'delta': found_delta
-    }
+    qqq = yf.Ticker("QQQ")
+    try:
+        options = qqq.options
+        valid_dates = []
+        now = datetime.now()
+        for d_str in options:
+            d_date = datetime.strptime(d_str, "%Y-%m-%d")
+            days_left = (d_date - now).days
+            if days_left >= TARGET_DTE_MIN:
+                valid_dates.append((d_str, days_left))
+        
+        if not valid_dates: return None
+        expiry, dte = min(valid_dates, key=lambda x: x[1])
+        
+        T = dte / 365.0
+        r = 0.045
+        best_strike = 0
+        min_diff = 1.0
+        found_delta = 0
+        
+        for strike in range(int(price * 0.5), int(price)):
+            d = calculate_put_delta(price, strike, T, r, iv)
+            diff = abs(d - target_delta)
+            if diff < min_diff:
+                min_diff = diff
+                best_strike = strike
+                found_delta = d
+                
+        return {
+            'expiry': expiry, 'dte': dte,
+            'short': best_strike, 'long': best_strike - SPREAD_WIDTH,
+            'delta': found_delta
+        }
+    except:
+        return None
 
-# === [4] 차트 그리기 ===
-def plot_charts(data):
+# === [4] 차트 생성 (v17.9 디자인 동일) ===
+def create_charts(data):
     hist = data['hist']
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True, gridspec_kw={'height_ratios': [3, 1]})
     
-    # Price Chart
+    fig = plt.figure(figsize=(10, 14))
+    gs = fig.add_gridspec(4, 1, height_ratios=[2, 0.6, 1, 1]) 
+    
+    # 1. Price
+    ax1 = fig.add_subplot(gs[0])
     ax1.plot(hist.index, hist['Close'], label='QQQ', color='black', alpha=0.7)
-    ax1.plot(hist.index, hist['MA20'], label='20MA', color='green', ls='--', lw=1)
-    ax1.plot(hist.index, hist['MA200'], label='200MA', color='red', lw=2)
-    ax1.fill_between(hist.index, hist['BB_Upper'], hist['BB_Lower'], color='gray', alpha=0.1)
-    ax1.set_title('QQQ Price & Trend', fontsize=12, fontweight='bold')
+    ax1.plot(hist.index, hist['MA20'], label='20MA', color='green', linestyle='--', linewidth=1)
+    ax1.plot(hist.index, hist['MA50'], label='50MA', color='blue', linestyle='-', linewidth=1.5)
+    ax1.plot(hist.index, hist['MA200'], label='200MA', color='red', linestyle='-', linewidth=2)
+    ax1.fill_between(hist.index, hist['BB_Upper'], hist['BB_Lower'], color='gray', alpha=0.1, label='Bollinger')
+    ax1.set_title('QQQ Price Trend (MA & Bollinger)', fontsize=12, fontweight='bold')
     ax1.legend(loc='upper left')
+    ax1.grid(True, alpha=0.3)
+    plt.setp(ax1.get_xticklabels(), visible=False)
     
-    # MACD Chart
+    # 2. Volume
+    ax_vol = fig.add_subplot(gs[1], sharex=ax1)
+    colors = ['red' if c < o else 'green' for c, o in zip(hist['Close'], hist['Open'])]
+    ax_vol.bar(hist.index, hist['Volume'], color=colors, alpha=0.5, label='Vol')
+    ax_vol.plot(hist.index, hist['Vol_MA20'], color='black', label='20MA', linewidth=1)
+    
+    vol_status = f"Volume ({data['vol_pct']:.1f}% of 20MA)"
+    ax_vol.set_title(vol_status, fontsize=10, fontweight='bold')
+    ax_vol.set_ylabel("Vol")
+    ax_vol.legend(loc='upper left', fontsize=9)
+    ax_vol.grid(True, alpha=0.3)
+    plt.setp(ax_vol.get_xticklabels(), visible=False)
+
+    # 3. MACD
+    ax2 = fig.add_subplot(gs[2], sharex=ax1)
     ax2.plot(hist.index, hist['MACD'], label='MACD', color='blue')
     ax2.plot(hist.index, hist['Signal'], label='Signal', color='orange')
     ax2.bar(hist.index, hist['MACD']-hist['Signal'], color='gray', alpha=0.3)
-    ax2.axhline(0, color='black', lw=0.5)
-    ax2.legend(loc='upper left')
+    ax2.axhline(0, color='black', linewidth=0.8) 
     
+    crosses = np.sign(hist['MACD'] - hist['Signal']).diff()
+    golden = hist[crosses == 2]
+    death = hist[crosses == -2]
+    ax2.scatter(golden.index, golden['MACD'], color='red', marker='^', s=100, label='Golden', zorder=5)
+    ax2.scatter(death.index, death['MACD'], color='blue', marker='v', s=100, label='Death', zorder=5)
+    ax2.set_title('MACD (Zero Line = Trend Depth)', fontsize=12, fontweight='bold')
+    ax2.legend(loc='upper left')
+    ax2.grid(True, alpha=0.3)
+    
+    # 4. VIX
+    ax3 = fig.add_subplot(gs[3], sharex=ax1)
+    ax3.plot(data['vix_hist'].index, data['vix_hist']['Close'], color='purple', label='VIX')
+    ax3.axhline(30, color='red', linestyle='--', label='Panic(30)')
+    ax3.axhline(20, color='green', linestyle='--', label='Stable(20)')
+    ax3.set_title('VIX', fontsize=12, fontweight='bold')
+    ax3.legend(loc='upper left')
+    ax3.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
     return fig
 
 # === [메인 화면 구성] ===
 def main():
-    st.title("📊 HK 옵션투자자문 대시보드")
-    st.markdown(f"Last Updated: **{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}**")
-    
-    # 사이드바 설정
-    with st.sidebar:
-        st.header("⚙️ 전략 설정")
-        target_dte = st.slider("목표 만기일 (DTE)", 30, 60, 45)
-        spread_width = st.selectbox("스프레드 폭 ($)", [5, 10, 20], index=1)
-        
-        if st.button("🔄 데이터 새로고침"):
-            st.cache_data.clear()
-            st.rerun()
+    st.title("📊 QQQ Expert Advisory (v17.9)")
+    st.caption(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
-    # 데이터 로딩
-    with st.spinner('미국 시장 데이터를 분석 중입니다...'):
+    # 1. 데이터 분석
+    with st.spinner('시장 데이터를 분석 중입니다...'):
         try:
             data = get_market_data()
+            season, score, log = analyze_expert_logic(data)
+            target_delta, verdict = determine_action(score, season)
+            strategy = find_best_option(data['price'], data['iv'], target_delta)
         except Exception as e:
-            st.error(f"데이터 수집 실패: {e}")
+            st.error(f"데이터 분석 오류: {e}")
             return
 
-    # 분석 실행
-    season, score, reasons = analyze_expert_logic(data)
-    target_delta, verdict_text, verdict_color = determine_action(score, season)
+    # 2. HTML 리포트 생성 (이메일 HTML과 100% 동일한 스타일)
     
-    # 1. 핵심 지표 대시보드
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("QQQ 현재가", f"${data['price']:.2f}", f"{data['price']-data['price_prev']:.2f}")
-    col2.metric("시장 계절", season)
-    col3.metric("HK 점수", f"{score}점")
-    col4.metric("VIX 지수", f"{data['vix']:.2f}", f"{data['vix']-data['vix_prev']:.2f}", delta_color="inverse")
+    # 헬퍼 함수들 (HTML 생성용)
+    def hl_score(category, row_state, col_season):
+        base = 'style="border: 1px solid #ddd; padding: 8px;"'
+        if log.get(category) == row_state and season == col_season:
+            return 'style="border: 3px solid #FF5722; background-color: #FFF8E1; font-weight: bold; color: #D84315; padding: 8px;"'
+        return base
 
-    # 2. 최종 판정 박스
-    st.markdown("---")
-    if verdict_color == "success":
-        st.success(f"## 📢 최종 판정: {verdict_text}")
-    elif verdict_color == "warning":
-        st.warning(f"## 📢 최종 판정: {verdict_text}")
-    else:
-        st.error(f"## 📢 최종 판정: {verdict_text}")
+    def hl_season(row_season):
+        if season == row_season:
+            return 'style="border: 3px solid #2196F3; background-color: #E3F2FD; font-weight: bold; padding: 8px;"'
+        return 'style="border: 1px solid #ddd; padding: 8px;"'
 
-    # 3. 추천 전략 및 근거
-    c1, c2 = st.columns([1, 1])
-    
-    with c1:
-        st.subheader("📝 점수 산정 근거")
-        if reasons:
-            for r in reasons:
-                st.write(f"- {r}")
-        else:
-            st.write("- 특이 사항 없음 (중립)")
-            
-    with c2:
-        st.subheader("🎯 추천 전략 (Put Credit Spread)")
-        strategy = find_best_option(data['price'], data['iv'], target_delta, target_dte, spread_width)
+    td_style = 'style="border: 1px solid #ddd; padding: 8px;"'
+
+    # HTML 1: Season Matrix
+    html_season = f"""
+    <h3>1. Market Season Matrix</h3>
+    <table style="border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 14px; text-align: center;">
+        <tr style="background-color: #f2f2f2;">
+            <th {td_style}>Season</th><th {td_style}>Condition</th><th {td_style}>Character</th>
+        </tr>
+        <tr><td {hl_season('SUMMER')}>☀️ SUMMER</td><td {hl_season('SUMMER')}>Price > 50MA & 200MA</td><td {hl_season('SUMMER')}>강세장</td></tr>
+        <tr><td {hl_season('AUTUMN')}>🍂 AUTUMN</td><td {hl_season('AUTUMN')}>Price < 50MA but > 200MA</td><td {hl_season('AUTUMN')}>조정기</td></tr>
+        <tr><td {hl_season('WINTER')}>❄️ WINTER</td><td {hl_season('WINTER')}>Price < 50MA & 200MA</td><td {hl_season('WINTER')}>약세장</td></tr>
+        <tr><td {hl_season('SPRING')}>🌱 SPRING</td><td {hl_season('SPRING')}>Price > 50MA but < 200MA</td><td {hl_season('SPRING')}>회복기</td></tr>
+    </table>
+    <p>※ QQQ: <b>${data['price']:.2f}</b> (Vol: {data['vol_pct']:.1f}% of 20MA)</p>
+    """
+    st.markdown(html_season, unsafe_allow_html=True)
+
+    # HTML 2: Scorecard
+    html_score = f"""
+    <h3>2. Expert Matrix Scorecard</h3>
+    <table style="border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 14px; text-align: center;">
+        <tr style="background-color: #f2f2f2;">
+            <th {td_style}>지표</th><th {td_style}>상태</th>
+            <th {td_style}>☀️</th><th {td_style}>🍂</th><th {td_style}>❄️</th><th {td_style}>🌱</th>
+            <th {td_style}>Logic</th>
+        </tr>
         
-        if strategy:
-            st.write(f"**만기 (DTE):** 약 {target_dte}일 후")
-            st.write(f"🔴 **Sell Put:** ${strategy['short']} (Delta {strategy['delta']:.2f})")
-            st.write(f"🟢 **Buy Put:** ${strategy['long']}")
-            st.info("반드시 **Net Credit**(돈을 받는 상태)인지 확인하세요.")
-        else:
-            st.write("현재 진입 가능한 적절한 옵션이 없습니다.")
+        <tr><td rowspan="4" {td_style}>RSI</td>
+            <td {td_style}>과열 (>70)</td>
+            <td {hl_score('rsi', 'over', 'SUMMER')}>-1</td><td {hl_score('rsi', 'over', 'AUTUMN')}>-3</td><td {hl_score('rsi', 'over', 'WINTER')}>-5</td><td {hl_score('rsi', 'over', 'SPRING')}>-2</td>
+            <td align="left" {td_style}>가짜 반등</td></tr>
+        <tr><td {td_style}>중립 (45-65)</td>
+            <td {hl_score('rsi', 'neutral', 'SUMMER')}>+1</td><td {hl_score('rsi', 'neutral', 'AUTUMN')}>0</td><td {hl_score('rsi', 'neutral', 'WINTER')}>-1</td><td {hl_score('rsi', 'neutral', 'SPRING')}>+1</td>
+            <td align="left" {td_style}>-</td></tr>
+        <tr><td {td_style}>과매도 (<30)</td>
+            <td {hl_score('rsi', 'under', 'SUMMER')}>+5</td><td {hl_score('rsi', 'under', 'AUTUMN')}>+4</td><td {hl_score('rsi', 'under', 'WINTER')}>0</td><td {hl_score('rsi', 'under', 'SPRING')}>+4</td>
+            <td align="left" {td_style}>겨울 바닥 X</td></tr>
+        <tr><td {td_style}>🚀 탈출</td>
+            <td {hl_score('rsi', 'escape', 'SUMMER')}>+5</td><td {hl_score('rsi', 'escape', 'AUTUMN')}>+5</td><td {hl_score('rsi', 'escape', 'WINTER')}>+6</td><td {hl_score('rsi', 'escape', 'SPRING')}>+5</td>
+            <td align="left" {td_style}><b>Timing</b></td></tr>
+        
+        <tr><td rowspan="4" {td_style}>VIX</td>
+            <td {td_style}>안정 (<20)</td>
+            <td {hl_score('vix', 'stable', 'SUMMER')}>0</td><td {hl_score('vix', 'stable', 'AUTUMN')}>0</td><td {hl_score('vix', 'stable', 'WINTER')}>-2</td><td {hl_score('vix', 'stable', 'SPRING')}>0</td>
+            <td align="left" {td_style}>저변동성</td></tr>
+        <tr><td {td_style}>공포 (20-35)</td>
+            <td {hl_score('vix', 'fear', 'SUMMER')}>-3</td><td {hl_score('vix', 'fear', 'AUTUMN')}>-4</td><td {hl_score('vix', 'fear', 'WINTER')}>+2</td><td {hl_score('vix', 'fear', 'SPRING')}>-1</td>
+            <td align="left" {td_style}>기회 탐색</td></tr>
+        <tr><td {td_style}>패닉 상승</td>
+            <td {hl_score('vix', 'panic_rise', 'SUMMER')}>-5</td><td {hl_score('vix', 'panic_rise', 'AUTUMN')}>-6</td><td {hl_score('vix', 'panic_rise', 'WINTER')}>-5</td><td {hl_score('vix', 'panic_rise', 'SPRING')}>-4</td>
+            <td align="left" {td_style}>칼날</td></tr>
+        <tr><td {td_style}>📉 꺾임</td>
+            <td {hl_score('vix', 'peak_out', 'SUMMER')}>-</td><td {hl_score('vix', 'peak_out', 'AUTUMN')}>-</td><td {hl_score('vix', 'peak_out', 'WINTER')}>+7</td><td {hl_score('vix', 'peak_out', 'SPRING')}>-</td>
+            <td align="left" {td_style}><b>Sniper</b></td></tr>
+        
+        <tr><td rowspan="3" {td_style}>BB</td>
+            <td {td_style}>밴드 내부</td>
+            <td {hl_score('bb', 'in', 'SUMMER')}>0</td><td {hl_score('bb', 'in', 'AUTUMN')}>0</td><td {hl_score('bb', 'in', 'WINTER')}>0</td><td {hl_score('bb', 'in', 'SPRING')}>0</td>
+            <td align="left" {td_style}>대기</td></tr>
+        <tr><td {td_style}>하단 이탈</td>
+            <td {hl_score('bb', 'out', 'SUMMER')}>+3</td><td {hl_score('bb', 'out', 'AUTUMN')}>+2</td><td {hl_score('bb', 'out', 'WINTER')}>-2</td><td {hl_score('bb', 'out', 'SPRING')}>+1</td>
+            <td align="left" {td_style}>가속화</td></tr>
+        <tr><td {td_style}>↩️ 복귀</td>
+            <td {hl_score('bb', 'return', 'SUMMER')}>+4</td><td {hl_score('bb', 'return', 'AUTUMN')}>+3</td><td {hl_score('bb', 'return', 'WINTER')}>+5</td><td {hl_score('bb', 'return', 'SPRING')}>+4</td>
+            <td align="left" {td_style}><b>Close In</b></td></tr>
+        
+        <tr><td {td_style}>추세</td><td {td_style}>20일선 위</td>
+            <td {hl_score('trend', 'up', 'SUMMER')}>+2</td><td {hl_score('trend', 'up', 'AUTUMN')}>+2</td><td {hl_score('trend', 'up', 'WINTER')}>+3</td><td {hl_score('trend', 'up', 'SPRING')}>+3</td>
+            <td align="left" {td_style}>회복</td></tr>
+        <tr><td {td_style}>거래량</td><td {td_style}>폭증 (>150%)</td>
+            <td {hl_score('vol', 'explode', 'SUMMER')}>+2</td><td {hl_score('vol', 'explode', 'AUTUMN')}>+3</td><td {hl_score('vol', 'explode', 'WINTER')}>+3</td><td {hl_score('vol', 'explode', 'SPRING')}>+2</td>
+            <td align="left" {td_style}><b>손바뀜</b></td></tr>
+        <tr><td {td_style}>거래량</td><td {td_style}>일반</td>
+            <td {hl_score('vol', 'normal', 'SUMMER')}>0</td><td {hl_score('vol', 'normal', 'AUTUMN')}>0</td><td {hl_score('vol', 'normal', 'WINTER')}>0</td><td {hl_score('vol', 'normal', 'SPRING')}>0</td>
+            <td align="left" {td_style}>-</td></tr>
+            
+        <tr><td rowspan="4" {td_style}>MACD</td>
+            <td {td_style}>🚀 수면 돌파</td>
+            <td {hl_score('macd', 'break_up', 'SUMMER')}>+3</td><td {hl_score('macd', 'break_up', 'AUTUMN')}>+3</td><td {hl_score('macd', 'break_up', 'WINTER')}>+3</td><td {hl_score('macd', 'break_up', 'SPRING')}>+3</td>
+            <td align="left" {td_style}><b>강력 매수</b></td></tr>
+        <tr><td {td_style}>수면 위 (>0)</td>
+            <td {hl_score('macd', 'above', 'SUMMER')}>+1</td><td {hl_score('macd', 'above', 'AUTUMN')}>+1</td><td {hl_score('macd', 'above', 'WINTER')}>+1</td><td {hl_score('macd', 'above', 'SPRING')}>+1</td>
+            <td align="left" {td_style}>순풍</td></tr>
+        <tr><td {td_style}>🌊 수면 추락</td>
+            <td {hl_score('macd', 'break_down', 'SUMMER')}>-3</td><td {hl_score('macd', 'break_down', 'AUTUMN')}>-3</td><td {hl_score('macd', 'break_down', 'WINTER')}>-3</td><td {hl_score('macd', 'break_down', 'SPRING')}>-3</td>
+            <td align="left" {td_style}><b>강력 매도</b></td></tr>
+        <tr><td {td_style}>수면 아래 (<0)</td>
+            <td {hl_score('macd', 'below', 'SUMMER')}>-1</td><td {hl_score('macd', 'below', 'AUTUMN')}>-1</td><td {hl_score('macd', 'below', 'WINTER')}>-1</td><td {hl_score('macd', 'below', 'SPRING')}>-1</td>
+            <td align="left" {td_style}>역풍</td></tr>
+    </table>
+    <p style="font-size:11px; color:gray;">* Score Range: Min <b>-15</b> ~ Max <b>+27</b></p>
+    """
+    st.markdown(html_score, unsafe_allow_html=True)
 
-    # 4. 차트
+    # HTML 3: Final Verdict
+    html_verdict = f"""
+    <h3>3. Final Verdict: <span style="color:blue; font-size:1.2em;">{score}점</span></h3>
+    <table style="border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 14px; text-align: center;">
+        <tr style="background-color: #f2f2f2;">
+            <th {td_style}>점수</th><th {td_style}>판정</th><th {td_style}>추천 델타</th><th {td_style}>성격</th>
+        </tr>
+        <tr style="{'background-color:#dff0d8' if score>=10 else ''}">
+            <td {td_style}>10점↑</td><td {td_style}>💎 강력 매수</td><td {td_style}>-0.30 (Aggressive)</td><td {td_style}>공격형</td>
+        </tr>
+        <tr style="{'background-color:#dff0d8' if 5<=score<10 else ''}">
+            <td {td_style}>5~9점</td><td {td_style}>⚖️ 매수 우위</td><td {td_style}>-0.20</td><td {td_style}>표준</td>
+        </tr>
+        <tr style="{'background-color:#fcf8e3' if 0<=score<5 else ''}">
+            <td {td_style}>0~4점</td><td {td_style}>🛡️ 중립/관망</td><td {td_style}>-0.10 (Safe)</td><td {td_style}>보수적</td>
+        </tr>
+        <tr style="{'background-color:#f2dede' if score<0 else ''}">
+            <td {td_style}>-1점↓</td><td {td_style}>⚠️ 위험/금지</td><td {td_style}>Hold</td><td {td_style}>회피</td>
+        </tr>
+    </table>
+    """
+    st.markdown(html_verdict, unsafe_allow_html=True)
+
+    # HTML 4: Manual & Order
+    if strategy:
+        html_manual = f"""
+        <div style="border: 2px solid #2196F3; padding: 15px; margin-top: 20px; border-radius: 10px; background-color: #ffffff;">
+            <h3 style="color: #2196F3; margin-top: 0;">👮‍♂️ 주문 상세 매뉴얼</h3>
+            <ul style="line-height: 1.6; list-style-type: none; padding-left: 0;">
+                <li>✅ <b>종목:</b> QQQ (Put Credit Spread)</li>
+                <li>✅ <b>만기:</b> {strategy['expiry']} (DTE {strategy['dte']}일)</li>
+                <li>✅ <b>Strike:</b> Short <b style="color:red">${strategy['short']}</b> / Long <b style="color:green">${strategy['long']}</b></li>
+                <li>✅ <b>Delta:</b> {strategy['delta']:.3f}</li>
+            </ul>
+            <hr>
+            <h4 style="margin-bottom: 5px;">🛑 청산 원칙 (Exit Rules)</h4>
+            <ul style="line-height: 1.6;">
+                <li><b>익절 (Win):</b> 수익 <b>+50%</b> 도달 시 자동 청산.</li>
+                <li style="color: red; font-weight: bold;">손절 (Loss): 프리미엄이 진입가의 3배(-200% 손실)가 되면 즉시 청산.</li>
+                <li><b>시간 청산:</b> 만기 <b>21일 전</b>까지 승부가 안 나면 무조건 청산.</li>
+            </ul>
+        </div>
+        """
+    else:
+        html_manual = """
+        <div style="border: 2px solid red; padding: 15px; margin-top: 20px; border-radius: 10px; background-color: #ffebee;">
+            <h3 style="color: red; margin-top: 0;">⛔ 긴급: 매매 중단 (No Entry)</h3>
+            <p>현재 시장 상황은 매우 위험합니다. (진입 금지 구간)</p>
+        </div>
+        """
+    st.markdown(html_manual, unsafe_allow_html=True)
+
+    # 3. 차트
     st.markdown("---")
     st.subheader("📈 기술적 분석 차트")
-    st.pyplot(plot_charts(data))
+    st.pyplot(create_charts(data))
 
 if __name__ == "__main__":
     main()
