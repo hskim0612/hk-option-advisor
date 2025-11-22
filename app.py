@@ -8,10 +8,10 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from io import BytesIO
 import base64
-import textwrap  # [추가] HTML 들여쓰기 제거용
+import textwrap
 
 # === [앱 보안 설정] ===
-APP_PASSWORD = "1979"  # 비밀번호 설정
+APP_PASSWORD = "1979"
 
 # === [페이지 기본 설정] ===
 st.set_page_config(
@@ -323,27 +323,33 @@ def main():
             st.error(f"오류 발생: {e}")
             return
 
-    # === HTML 렌더링 (들여쓰기 제거 적용) ===
+    # === [수정됨] 모바일 다크 모드 대비: 글자색 강제 지정 (color: black) ===
     
     def hl_score(category, row_state, col_season):
-        base = 'style="border: 1px solid #ddd; padding: 8px;"'
+        # 기본: 검은 글씨 + 연한 회색 배경
+        base = 'style="border: 1px solid #ddd; padding: 8px; color: black; background-color: white;"'
         if log.get(category) == row_state and season == col_season:
+            # 강조: 주황색 글씨 + 노란 배경
             return 'style="border: 3px solid #FF5722; background-color: #FFF8E1; font-weight: bold; color: #D84315; padding: 8px;"'
         return base
 
     def hl_season(row_season):
         if season == row_season:
-            return 'style="border: 3px solid #2196F3; background-color: #E3F2FD; font-weight: bold; padding: 8px;"'
-        return 'style="border: 1px solid #ddd; padding: 8px;"'
+            # 현재 계절 강조: 파란 배경 + 검은 글씨
+            return 'style="border: 3px solid #2196F3; background-color: #E3F2FD; font-weight: bold; color: black; padding: 8px;"'
+        # 일반 계절: 흰 배경 + 검은 글씨
+        return 'style="border: 1px solid #ddd; padding: 8px; color: black; background-color: white;"'
 
-    td_style = 'style="border: 1px solid #ddd; padding: 8px;"'
+    # 공통 스타일: 검은 글씨, 흰 배경 강제
+    td_style = 'style="border: 1px solid #ddd; padding: 8px; color: black; background-color: white;"'
+    th_style = 'style="border: 1px solid #ddd; padding: 8px; color: black; background-color: #f2f2f2;"'
 
     # HTML 1: Season
     html_season = f"""
     <h3>1. Market Season Matrix</h3>
     <table style="border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 14px; text-align: center;">
-        <tr style="background-color: #f2f2f2;">
-            <th {td_style}>Season</th><th {td_style}>Condition</th><th {td_style}>Character</th>
+        <tr>
+            <th {th_style}>Season</th><th {th_style}>Condition</th><th {th_style}>Character</th>
         </tr>
         <tr><td {hl_season('SUMMER')}>☀️ SUMMER</td><td {hl_season('SUMMER')}>Price > 50MA & 200MA</td><td {hl_season('SUMMER')}>강세장</td></tr>
         <tr><td {hl_season('AUTUMN')}>🍂 AUTUMN</td><td {hl_season('AUTUMN')}>Price < 50MA but > 200MA</td><td {hl_season('AUTUMN')}>조정기</td></tr>
@@ -358,10 +364,10 @@ def main():
     html_score = f"""
     <h3>2. Expert Matrix Scorecard</h3>
     <table style="border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 14px; text-align: center;">
-        <tr style="background-color: #f2f2f2;">
-            <th {td_style}>지표</th><th {td_style}>상태</th>
-            <th {td_style}>☀️</th><th {td_style}>🍂</th><th {td_style}>❄️</th><th {td_style}>🌱</th>
-            <th {td_style}>Logic</th>
+        <tr>
+            <th {th_style}>지표</th><th {th_style}>상태</th>
+            <th {th_style}>☀️</th><th {th_style}>🍂</th><th {th_style}>❄️</th><th {th_style}>🌱</th>
+            <th {th_style}>Logic</th>
         </tr>
         <tr><td rowspan="4" {td_style}>RSI</td>
             <td {td_style}>과열 (>70)</td>
@@ -429,8 +435,8 @@ def main():
     html_verdict = f"""
     <h3>3. Final Verdict: <span style="color:blue; font-size:1.2em;">{score}점</span></h3>
     <table style="border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 14px; text-align: center;">
-        <tr style="background-color: #f2f2f2;">
-            <th {td_style}>점수</th><th {td_style}>판정</th><th {td_style}>추천 델타</th><th {td_style}>성격</th>
+        <tr>
+            <th {th_style}>점수</th><th {th_style}>판정</th><th {th_style}>추천 델타</th><th {th_style}>성격</th>
         </tr>
         <tr style="{'background-color:#dff0d8' if score>=10 else ''}">
             <td {td_style}>10점↑</td><td {td_style}>💎 강력 매수</td><td {td_style}>-0.30 (Aggressive)</td><td {td_style}>공격형</td>
@@ -451,17 +457,17 @@ def main():
     # HTML 4: Manual
     if strategy:
         html_manual = f"""
-        <div style="border: 2px solid #2196F3; padding: 15px; margin-top: 20px; border-radius: 10px; background-color: #ffffff;">
+        <div style="border: 2px solid #2196F3; padding: 15px; margin-top: 20px; border-radius: 10px; background-color: #ffffff; color: black;">
             <h3 style="color: #2196F3; margin-top: 0;">👮‍♂️ 주문 상세 매뉴얼</h3>
-            <ul style="line-height: 1.6; list-style-type: none; padding-left: 0;">
+            <ul style="line-height: 1.6; list-style-type: none; padding-left: 0; color: black;">
                 <li>✅ <b>종목:</b> QQQ (Put Credit Spread)</li>
                 <li>✅ <b>만기:</b> {strategy['expiry']} (DTE {strategy['dte']}일)</li>
                 <li>✅ <b>Strike:</b> Short <b style="color:red">${strategy['short']}</b> / Long <b style="color:green">${strategy['long']}</b></li>
                 <li>✅ <b>Delta:</b> {strategy['delta']:.3f}</li>
             </ul>
             <hr>
-            <h4 style="margin-bottom: 5px;">🛑 청산 원칙 (Exit Rules)</h4>
-            <ul style="line-height: 1.6;">
+            <h4 style="margin-bottom: 5px; color: black;">🛑 청산 원칙 (Exit Rules)</h4>
+            <ul style="line-height: 1.6; color: black;">
                 <li><b>익절 (Win):</b> 수익 <b>+50%</b> 도달 시 자동 청산.</li>
                 <li style="color: red; font-weight: bold;">손절 (Loss): 프리미엄이 진입가의 3배(-200% 손실)가 되면 즉시 청산.</li>
                 <li><b>시간 청산:</b> 만기 <b>21일 전</b>까지 승부가 안 나면 무조건 청산.</li>
@@ -472,7 +478,7 @@ def main():
         html_manual = """
         <div style="border: 2px solid red; padding: 15px; margin-top: 20px; border-radius: 10px; background-color: #ffebee;">
             <h3 style="color: red; margin-top: 0;">⛔ 긴급: 매매 중단 (No Entry)</h3>
-            <p>현재 시장 상황은 매우 위험합니다. (진입 금지 구간)</p>
+            <p style="color: black;">현재 시장 상황은 매우 위험합니다. (진입 금지 구간)</p>
         </div>
         """
     st.markdown(textwrap.dedent(html_manual), unsafe_allow_html=True)
