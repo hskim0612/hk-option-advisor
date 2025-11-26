@@ -103,7 +103,7 @@ def get_market_data():
         'hist': hist, 'vix_hist': vix_hist
     }
 
-# === [2] 전문가 로직 (수정됨: RSI 사각지대 제거) ===
+# === [2] 전문가 로직 (수정됨: VIX 전략 반영) ===
 def analyze_expert_logic(d):
     if d['price'] > d['ma50'] and d['price'] > d['ma200']: season = "SUMMER"
     elif d['price'] < d['ma50'] and d['price'] > d['ma200']: season = "AUTUMN"
@@ -113,30 +113,25 @@ def analyze_expert_logic(d):
     score = 0
     log = {}
     
-    # RSI Logic (Updated: No Dead Zones)
+    # RSI Logic (No Dead Zones)
     if d['rsi_prev'] < 30 and d['rsi'] >= 30:
-        # [Escape] 과매도 탈출 (강력한 신호)
         pts = 6 if season == "WINTER" else 5
         score += pts
         log['rsi'] = 'escape'
     elif d['rsi'] >= 70:
-        # [Over] 과매수 (>= 70)
         pts = -1 if season == "SUMMER" else -3 if season == "AUTUMN" else -5 if season == "WINTER" else -2
         score += pts
         log['rsi'] = 'over'
     elif d['rsi'] < 30:
-        # [Under] 과매도 (< 30)
         pts = 5 if season == "SUMMER" else 4 if season == "AUTUMN" or season == "SPRING" else 0
         score += pts
         log['rsi'] = 'under'
     else:
-        # [Neutral] 그 외 모든 구간 (30~70 사이)
-        # 기존 45-65 점수 로직을 이 구간 전체에 적용
         pts = 1 if season == "SUMMER" or season == "SPRING" else 0 if season == "AUTUMN" else -1
         score += pts
         log['rsi'] = 'neutral'
 
-    # VIX
+    # VIX Logic (수정됨: 강세장 안정권 가산점 부여)
     if d['vix'] > 35:
         if d['vix'] < d['vix_prev']:
             pts = 7 if season == "WINTER" else 0
@@ -147,7 +142,8 @@ def analyze_expert_logic(d):
             score += pts
             log['vix'] = 'panic_rise'
     elif d['vix'] < 20:
-        pts = -2 if season == "WINTER" else 0
+        # [Stable] 안정권 로직 변경: SUMMER(+2), SPRING(+1)
+        pts = 2 if season == "SUMMER" else 1 if season == "SPRING" else -2 if season == "WINTER" else 0
         score += pts
         log['vix'] = 'stable'
     elif 20 <= d['vix'] <= 35:
@@ -291,7 +287,7 @@ def create_charts(data):
     ax_vol.grid(True, alpha=0.3)
     plt.setp(ax_vol.get_xticklabels(), visible=False)
 
-    # 3. RSI (New)
+    # 3. RSI
     ax_rsi = fig.add_subplot(gs[2], sharex=ax1)
     ax_rsi.plot(hist.index, hist['RSI'], color='purple', label='RSI')
     ax_rsi.axhline(70, color='red', ls='--', alpha=0.7)
@@ -376,6 +372,7 @@ def main():
     """
     st.markdown(textwrap.dedent(html_season), unsafe_allow_html=True)
 
+    # HTML 2: Scorecard (수정됨: VIX 점수 표기 변경)
     html_score = f"""
     <h3>2. Expert Matrix Scorecard</h3>
     <table style="border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 14px; text-align: center;">
@@ -399,7 +396,7 @@ def main():
             <td align="left" {td_style}><b>Timing</b></td></tr>
         <tr><td rowspan="4" {td_style}>VIX</td>
             <td {td_style}>안정 (<20)</td>
-            <td {hl_score('vix', 'stable', 'SUMMER')}>0</td><td {hl_score('vix', 'stable', 'AUTUMN')}>0</td><td {hl_score('vix', 'stable', 'WINTER')}>-2</td><td {hl_score('vix', 'stable', 'SPRING')}>0</td>
+            <td {hl_score('vix', 'stable', 'SUMMER')}>+2</td><td {hl_score('vix', 'stable', 'AUTUMN')}>0</td><td {hl_score('vix', 'stable', 'WINTER')}>-2</td><td {hl_score('vix', 'stable', 'SPRING')}>+1</td>
             <td align="left" {td_style}>저변동성</td></tr>
         <tr><td {td_style}>공포 (20-35)</td>
             <td {hl_score('vix', 'fear', 'SUMMER')}>-3</td><td {hl_score('vix', 'fear', 'AUTUMN')}>-4</td><td {hl_score('vix', 'fear', 'WINTER')}>+2</td><td {hl_score('vix', 'fear', 'SPRING')}>-1</td>
