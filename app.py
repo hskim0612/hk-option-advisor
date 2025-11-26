@@ -15,12 +15,12 @@ APP_PASSWORD = "1979"
 
 # === [페이지 기본 설정] ===
 st.set_page_config(
-    page_title="HK 옵션투자자문 (Expert v18.2 - Final Fixed)",
+    page_title="HK 옵션투자자문 (Expert v18.3 - Fixed Table)",
     page_icon="📊",
     layout="wide"
 )
 
-# 차트 스타일
+# 차트 스타일 설정
 plt.style.use('seaborn-v0_8-darkgrid')
 plt.rcParams['font.family'] = 'sans-serif'
 
@@ -52,20 +52,24 @@ def get_market_data():
     qqq = yf.Ticker("QQQ")
     hist = qqq.history(period="2y")
     
+    # 이동평균선
     hist['MA20'] = hist['Close'].rolling(window=20).mean()
     hist['MA50'] = hist['Close'].rolling(window=50).mean()
     hist['MA200'] = hist['Close'].rolling(window=200).mean()
     
+    # 볼린저 밴드
     hist['BB_Mid'] = hist['MA20']
     hist['BB_Std'] = hist['Close'].rolling(window=20).std()
     hist['BB_Upper'] = hist['BB_Mid'] + (hist['BB_Std'] * 2)
     hist['BB_Lower'] = hist['BB_Mid'] - (hist['BB_Std'] * 2)
     
+    # MACD
     exp1 = hist['Close'].ewm(span=12, adjust=False).mean()
     exp2 = hist['Close'].ewm(span=26, adjust=False).mean()
     hist['MACD'] = exp1 - exp2
     hist['Signal'] = hist['MACD'].ewm(span=9, adjust=False).mean()
     
+    # RSI
     delta = hist['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
@@ -74,6 +78,7 @@ def get_market_data():
     
     hist['Vol_MA20'] = hist['Volume'].rolling(window=20).mean()
     
+    # VIX
     vix_hist = yf.Ticker("^VIX").history(period="1y")
     
     curr = hist.iloc[-1]
@@ -83,6 +88,7 @@ def get_market_data():
     
     vol_pct = (curr['Volume'] / curr['Vol_MA20']) * 100
 
+    # IV (Implied Volatility)
     try:
         dates = qqq.options
         chain = qqq.option_chain(dates[1])
@@ -103,7 +109,7 @@ def get_market_data():
         'hist': hist, 'vix_hist': vix_hist
     }
 
-# === [2] 전문가 로직 (RSI Time-Decay & VIX 전략) ===
+# === [2] 전문가 로직 ===
 def analyze_expert_logic(d):
     if d['price'] > d['ma50'] and d['price'] > d['ma200']: season = "SUMMER"
     elif d['price'] < d['ma50'] and d['price'] > d['ma200']: season = "AUTUMN"
@@ -113,7 +119,7 @@ def analyze_expert_logic(d):
     score = 0
     log = {}
     
-    # --- RSI Logic ---
+    # RSI Logic
     hist_rsi = d['hist']['RSI']
     curr_rsi = d['rsi']
     days_since_escape = 0
@@ -146,7 +152,7 @@ def analyze_expert_logic(d):
         score += pts
         log['rsi'] = 'neutral'
 
-    # --- VIX Logic ---
+    # VIX Logic
     if d['vix'] > 35:
         if d['vix'] < d['vix_prev']:
             pts = 7 if season == "WINTER" else 0
@@ -167,7 +173,7 @@ def analyze_expert_logic(d):
     else:
         log['vix'] = 'none'
 
-    # Bollinger
+    # Bollinger Logic
     if d['price_prev'] < d['bb_lower_prev'] and d['price'] >= d['bb_lower']:
         pts = 5 if season == "WINTER" else 4
         score += pts
@@ -179,7 +185,7 @@ def analyze_expert_logic(d):
     else:
         log['bb'] = 'in'
 
-    # Trend
+    # Trend Logic
     if d['price'] > d['ma20']:
         pts = 3 if season == "WINTER" or season == "SPRING" else 2
         score += pts
@@ -187,7 +193,7 @@ def analyze_expert_logic(d):
     else:
         log['trend'] = 'down'
 
-    # Volume
+    # Volume Logic
     if d['volume'] > d['vol_ma20'] * 1.5:
         pts = 3 if season == "WINTER" or season == "AUTUMN" else 2
         score += pts
@@ -195,7 +201,7 @@ def analyze_expert_logic(d):
     else:
         log['vol'] = 'normal'
 
-    # MACD
+    # MACD Logic
     if d['macd_prev'] < 0 and d['macd'] >= 0:
         pts = 3
         score += pts
@@ -215,29 +221,24 @@ def analyze_expert_logic(d):
 
     return season, score, log
 
-# === [3] 전략 탐색 및 행동 결정 (Dynamic Exit Matrix) ===
+# === [3] 전략 탐색 및 행동 결정 ===
 def determine_action(score, season, data):
     vix_pct_change = ((data['vix'] - data['vix_prev']) / data['vix_prev']) * 100
-    
     TARGET_DELTA = -0.10
     
     # 1. Panic Condition
     if vix_pct_change > 15.0:
         return TARGET_DELTA, "⛔ 매매 중단 (VIX 급등)", "-", "-", "panic"
-
-    # 2. Strong Trend (강세장)
+    # 2. Strong
     if score >= 12:
         return TARGET_DELTA, "💎 추세 추종 (Strong)", "75%", "300%", "strong"
-    
-    # 3. Standard (평범)
+    # 3. Standard
     elif 8 <= score < 12:
         return TARGET_DELTA, "✅ 표준 대응 (Standard)", "50%", "200%", "standard"
-        
-    # 4. Hit & Run (약세/주의)
+    # 4. Hit & Run
     elif 5 <= score < 8:
         return TARGET_DELTA, "⚠️ 속전 속결 (Hit & Run)", "30%", "150%", "weak"
-        
-    # 5. No Entry (관망)
+    # 5. No Entry
     else:
         return None, "🛡️ 진입 보류", "-", "-", "no_entry"
 
@@ -248,9 +249,8 @@ def calculate_put_delta(S, K, T, r, sigma):
 
 def find_best_option(price, iv, target_delta):
     if target_delta is None: return None
-    
-    TARGET_DTE_MIN = 45  # [고정] 만기 45일 선호
-    SPREAD_WIDTH = 5     # [고정] 스프레드 폭 5달러
+    TARGET_DTE_MIN = 45
+    SPREAD_WIDTH = 5
     
     qqq = yf.Ticker("QQQ")
     try:
@@ -289,13 +289,13 @@ def find_best_option(price, iv, target_delta):
     except:
         return None
 
-# === [4] 차트 (RSI 그래프 포함) ===
+# === [4] 차트 ===
 def create_charts(data):
     hist = data['hist']
     fig = plt.figure(figsize=(10, 16))
-    
     gs = fig.add_gridspec(5, 1, height_ratios=[2, 0.6, 1, 1, 1])
     
+    # Price
     ax1 = fig.add_subplot(gs[0])
     ax1.plot(hist.index, hist['Close'], label='QQQ', color='black', alpha=0.7)
     ax1.plot(hist.index, hist['MA20'], label='20MA', color='green', ls='--', lw=1)
@@ -307,6 +307,7 @@ def create_charts(data):
     ax1.grid(True, alpha=0.3)
     plt.setp(ax1.get_xticklabels(), visible=False)
     
+    # Volume
     ax_vol = fig.add_subplot(gs[1], sharex=ax1)
     colors = ['red' if c < o else 'green' for c, o in zip(hist['Close'], hist['Open'])]
     ax_vol.bar(hist.index, hist['Volume'], color=colors, alpha=0.5)
@@ -315,6 +316,7 @@ def create_charts(data):
     ax_vol.grid(True, alpha=0.3)
     plt.setp(ax_vol.get_xticklabels(), visible=False)
 
+    # RSI
     ax_rsi = fig.add_subplot(gs[2], sharex=ax1)
     ax_rsi.plot(hist.index, hist['RSI'], color='purple', label='RSI')
     ax_rsi.axhline(70, color='red', ls='--', alpha=0.7)
@@ -327,22 +329,17 @@ def create_charts(data):
     ax_rsi.grid(True, alpha=0.3)
     plt.setp(ax_rsi.get_xticklabels(), visible=False)
 
+    # MACD
     ax2 = fig.add_subplot(gs[3], sharex=ax1)
     ax2.plot(hist.index, hist['MACD'], label='MACD', color='blue')
     ax2.plot(hist.index, hist['Signal'], label='Signal', color='orange')
     ax2.bar(hist.index, hist['MACD']-hist['Signal'], color='gray', alpha=0.3)
     ax2.axhline(0, color='black', lw=0.8)
-    
-    crosses = np.sign(hist['MACD'] - hist['Signal']).diff()
-    golden = hist[crosses == 2]
-    death = hist[crosses == -2]
-    
-    ax2.scatter(golden.index, golden['MACD'], color='red', marker='^', s=100, zorder=5)
-    ax2.scatter(death.index, death['MACD'], color='blue', marker='v', s=100, zorder=5)
     ax2.set_title('MACD', fontsize=12, fontweight='bold')
     ax2.grid(True, alpha=0.3)
     plt.setp(ax2.get_xticklabels(), visible=False)
     
+    # VIX
     ax3 = fig.add_subplot(gs[4], sharex=ax1)
     ax3.plot(data['vix_hist'].index, data['vix_hist']['Close'], color='purple', label='VIX')
     ax3.axhline(30, color='red', ls='--')
@@ -355,7 +352,7 @@ def create_charts(data):
 
 # === [메인 화면] ===
 def main():
-    st.title("📊 QQQ Expert Advisory (v18.2 Final)")
+    st.title("📊 QQQ Expert Advisory (v18.3)")
     st.caption(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     with st.spinner('분석 중...'):
@@ -368,18 +365,15 @@ def main():
             st.error(f"오류 발생: {e}")
             return
 
+    # 스타일 헬퍼
     def hl_score(category, row_state, col_season):
         base = 'style="border: 1px solid #ddd; padding: 8px; color: black; background-color: white;"'
-        
         current_val = log.get(category, '')
-        
         is_match = False
         if category == 'rsi' and row_state == 'escape':
-            if 'escape' in current_val:
-                is_match = True
+            if 'escape' in current_val: is_match = True
         else:
-            if current_val == row_state:
-                is_match = True
+            if current_val == row_state: is_match = True
         
         if is_match and season == col_season:
             return 'style="border: 3px solid #FF5722; background-color: #FFF8E1; font-weight: bold; color: #D84315; padding: 8px;"'
@@ -393,6 +387,7 @@ def main():
     td_style = 'style="border: 1px solid #ddd; padding: 8px; color: black; background-color: white;"'
     th_style = 'style="border: 1px solid #ddd; padding: 8px; color: black; background-color: #f2f2f2;"'
 
+    # 1. Season Matrix
     html_season = f"""
     <h3>1. Market Season Matrix</h3>
     <table style="border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 14px; text-align: center;">
@@ -408,7 +403,7 @@ def main():
     """
     st.markdown(textwrap.dedent(html_season), unsafe_allow_html=True)
 
-    # HTML 2: Scorecard (직관적 설명 추가 + 테이블 태그 복구)
+    # 2. Scorecard (테이블 태그 완벽 복구)
     html_score = f"""
     <h3>2. Expert Matrix Scorecard</h3>
     <table style="border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 14px; text-align: center;">
@@ -485,7 +480,7 @@ def main():
     """
     st.markdown(textwrap.dedent(html_score), unsafe_allow_html=True)
 
-    # HTML 3: Final Verdict
+    # 3. Final Verdict
     def get_matrix_style(current_id, row_id, bg_color):
         if current_id == row_id:
             return f'style="background-color: {bg_color}; border: 3px solid #666; font-weight: bold; color: #333; height: 50px;"'
