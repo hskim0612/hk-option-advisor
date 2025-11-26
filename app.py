@@ -15,7 +15,7 @@ APP_PASSWORD = "1979"
 
 # === [페이지 기본 설정] ===
 st.set_page_config(
-    page_title="HK 옵션투자자문 (Expert v18.1 - Intuitive UI)",
+    page_title="HK 옵션투자자문 (Expert v18.2 - Final Fixed)",
     page_icon="📊",
     layout="wide"
 )
@@ -355,7 +355,7 @@ def create_charts(data):
 
 # === [메인 화면] ===
 def main():
-    st.title("📊 QQQ Expert Advisory (v18.1 Intuitive)")
+    st.title("📊 QQQ Expert Advisory (v18.2 Final)")
     st.caption(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     with st.spinner('분석 중...'):
@@ -408,7 +408,7 @@ def main():
     """
     st.markdown(textwrap.dedent(html_season), unsafe_allow_html=True)
 
-    # === [수정됨] HTML 2: Scorecard (직관적 설명 추가) ===
+    # HTML 2: Scorecard (직관적 설명 추가 + 테이블 태그 복구)
     html_score = f"""
     <h3>2. Expert Matrix Scorecard</h3>
     <table style="border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 14px; text-align: center;">
