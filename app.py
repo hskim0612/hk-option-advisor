@@ -6,14 +6,13 @@ from scipy.stats import norm
 from datetime import datetime
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-# textwrap 제거 (HTML 렌더링 오류 원인)
 
 # === [앱 보안 설정] ===
 APP_PASSWORD = "1979"
 
 # === [페이지 기본 설정] ===
 st.set_page_config(
-    page_title="HK 옵션투자자문 (Expert v18.4 - Rendering Fixed)",
+    page_title="HK 옵션투자자문 (Expert v18.4 - Action Plan)",
     page_icon="📊",
     layout="wide"
 )
@@ -363,11 +362,9 @@ def main():
             st.error(f"오류 발생: {e}")
             return
 
-    # 스타일 헬퍼: HTML 속성은 반드시 작은따옴표(') 사용
+    # 스타일 헬퍼
     def hl_score(category, row_state, col_season):
-        # 기본 스타일
         base = "style='border: 1px solid #ddd; padding: 8px; color: black; background-color: white;'"
-        
         current_val = log.get(category, '')
         is_match = False
         if category == 'rsi' and row_state == 'escape':
@@ -376,7 +373,6 @@ def main():
             if current_val == row_state: is_match = True
         
         if is_match and season == col_season:
-            # 강조 스타일
             return "style='border: 3px solid #FF5722; background-color: #FFF8E1; font-weight: bold; color: #D84315; padding: 8px;'"
         return base
 
@@ -385,11 +381,10 @@ def main():
             return "style='border: 3px solid #2196F3; background-color: #E3F2FD; font-weight: bold; color: black; padding: 8px;'"
         return "style='border: 1px solid #ddd; padding: 8px; color: black; background-color: white;'"
 
-    # 공통 스타일 정의 (작은따옴표 사용)
     td_style = "style='border: 1px solid #ddd; padding: 8px; color: black; background-color: white;'"
     th_style = "style='border: 1px solid #ddd; padding: 8px; color: black; background-color: #f2f2f2;'"
 
-    # 1. Season Matrix (리스트 결합 방식)
+    # 1. Season Matrix
     html_season_list = [
         "<h3>1. Market Season Matrix</h3>",
         "<table style='border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 14px; text-align: center;'>",
@@ -405,7 +400,7 @@ def main():
     ]
     st.markdown("".join(html_season_list), unsafe_allow_html=True)
 
-    # 2. Scorecard (리스트 결합 방식)
+    # 2. Scorecard
     html_score_list = [
         "<h3>2. Expert Matrix Scorecard</h3>",
         "<table style='border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 14px; text-align: center;'>",
@@ -501,9 +496,8 @@ def main():
     ]
     st.markdown("".join(html_score_list), unsafe_allow_html=True)
 
-    # 3. Final Verdict (리스트 결합 방식)
+    # 3. Final Verdict
     def get_matrix_style(current_id, row_id, bg_color):
-        # 스타일 리턴값도 HTML 속성은 작은따옴표(') 사용
         if current_id == row_id:
             return f"style='background-color: {bg_color}; border: 3px solid #666; font-weight: bold; color: #333; height: 50px;'"
         else:
@@ -543,23 +537,59 @@ def main():
     ]
     st.markdown("".join(html_verdict_list), unsafe_allow_html=True)
 
-    # 4. Manual / Warning (리스트 결합)
+    # 4. Manual / Warning (테이블 적용)
     if strategy and matrix_id != 'no_entry' and matrix_id != 'panic':
         html_manual_list = [
             "<div style='border: 2px solid #2196F3; padding: 15px; margin-top: 20px; border-radius: 10px; background-color: #ffffff; color: black;'>",
-            "<h3 style='color: #2196F3; margin-top: 0;'>👮‍♂️ 주문 상세 매뉴얼</h3>",
-            "<ul style='line-height: 1.6; list-style-type: none; padding-left: 0; color: black;'>",
-            f"<li>✅ <b>종목:</b> QQQ (Put Credit Spread)</li>",
-            f"<li>✅ <b>만기:</b> {strategy['expiry']} (DTE {strategy['dte']}일)</li>",
-            f"<li>✅ <b>Strike:</b> Short <b style='color:red'>${strategy['short']}</b> / Long <b style='color:green'>${strategy['long']}</b> (Width ${strategy['width']})</li>",
-            f"<li>✅ <b>Delta:</b> {strategy['delta']:.3f} (Target: {target_delta})</li>",
-            "</ul><hr>",
-            "<h4 style='margin-bottom: 5px; color: black;'>🛑 적용된 청산 원칙</h4>",
-            "<ul style='line-height: 1.6; color: black;'>",
-            f"<li><b>익절 (Take Profit):</b> 진입 프리미엄의 <b>{profit_target}</b> 이익 시 청산</li>",
-            f"<li style='color: red; font-weight: bold;'>손절 (Stop Loss): 진입 프리미엄의 {stop_loss} 도달 시 즉시 청산</li>",
-            "<li><b>주의:</b> 90% 비중 투자 시, 반드시 진입과 동시에 <u>감시 주문(Stop Limit)</u>을 설정하세요.</li>",
-            "</ul></div>"
+            "<h3 style='color: #2196F3; margin-top: 0;'>👮‍♂️ 주문 상세 매뉴얼 (Action Plan)</h3>",
+            
+            # --- Table Start ---
+            "<table style='border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; text-align: center; font-size: 13px; margin-bottom: 15px;'>",
+            
+            # Header
+            "<tr style='background-color: #e3f2fd; border: 1px solid #ddd;'>",
+            "<th style='padding: 8px; border: 1px solid #ddd;'>구분</th>",
+            "<th style='padding: 8px; border: 1px solid #ddd;'>행동</th>",
+            "<th style='padding: 8px; border: 1px solid #ddd;'>시간</th>",
+            "<th style='padding: 8px; border: 1px solid #ddd;'>방식</th>",
+            "</tr>",
+            
+            # Row 1: Entry
+            "<tr>",
+            "<td style='padding: 8px; border: 1px solid #ddd; font-weight:bold;'>진입 (Entry)</td>",
+            "<td style='padding: 8px; border: 1px solid #ddd;'>신규 포지션 구축</td>",
+            "<td style='padding: 8px; border: 1px solid #ddd;'>🕒 <b>마감 30분 전</b><br><span style='font-size:11px; color:#666;'>(한국 아침 05:30)</span></td>",
+            "<td style='padding: 8px; border: 1px solid #ddd;'><b>수동 진입</b><br><span style='font-size:11px; color:#666;'>(앱 점수 확인 후)</span></td>",
+            "</tr>",
+            
+            # Row 2: Loss
+            "<tr>",
+            "<td style='padding: 8px; border: 1px solid #ddd; font-weight:bold; color:red;'>손절 (Loss)</td>",
+            "<td style='padding: 8px; border: 1px solid #ddd;'>위기 탈출</td>",
+            "<td style='padding: 8px; border: 1px solid #ddd;'>🚨 <b>언제든지</b><br><span style='font-size:11px; color:#666;'>(장중 내내)</span></td>",
+            "<td style='padding: 8px; border: 1px solid #ddd;'><b>자동 감시 주문</b><br><span style='font-size:11px; color:#666;'>(진입 즉시 세팅)</span></td>",
+            "</tr>",
+            
+            # Row 3: Win
+            "<tr>",
+            "<td style='padding: 8px; border: 1px solid #ddd; font-weight:bold; color:green;'>익절 (Win)</td>",
+            "<td style='padding: 8px; border: 1px solid #ddd;'>수익 실현</td>",
+            "<td style='padding: 8px; border: 1px solid #ddd;'>💰 <b>장중 아무 때나</b><br><span style='font-size:11px; color:#666;'>(목표가 도달 시)</span></td>",
+            "<td style='padding: 8px; border: 1px solid #ddd;'><b>GTC 지정가 주문</b><br><span style='font-size:11px; color:#666;'>(미리 걸어두기)</span></td>",
+            "</tr>",
+            "</table>",
+            
+            # --- Summary Text ---
+            "<div style='background-color: #f9f9f9; padding: 10px; border-radius: 5px; font-size: 14px;'>",
+            f"<b>✅ 현재 포지션 목표 (Spec):</b><br>",
+            f"• <b>종목:</b> QQQ Put Credit Spread (만기 {strategy['expiry']}, DTE {strategy['dte']}일)<br>",
+            f"• <b>Strike:</b> Short ${strategy['short']} / Long ${strategy['long']} (Width ${strategy['width']})<br>",
+            "<hr style='margin: 8px 0; border: 0; border-top: 1px solid #ddd;'>",
+            f"• <b>익절 (Target):</b> 진입가 대비 <b style='color:green;'>{profit_target}</b> 도달 시<br>",
+            f"• <b>손절 (Stop):</b> 진입가 대비 <b style='color:red;'>{stop_loss}</b> 도달 시 (즉시 청산)",
+            "</div>",
+            
+            "</div>"
         ]
         st.markdown("".join(html_manual_list), unsafe_allow_html=True)
     else:
