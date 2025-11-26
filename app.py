@@ -260,12 +260,16 @@ def find_best_option(price, iv, target_delta):
     except:
         return None
 
-# === [4] 차트 ===
+# === [4] 차트 (수정됨: RSI 추가) ===
 def create_charts(data):
     hist = data['hist']
-    fig = plt.figure(figsize=(10, 14))
-    gs = fig.add_gridspec(4, 1, height_ratios=[2, 0.6, 1, 1])
+    # 전체 높이를 조금 늘려서(14 -> 16) 그래프 간격을 확보
+    fig = plt.figure(figsize=(10, 16))
     
+    # 5개의 행으로 변경 (Price, Volume, RSI, MACD, VIX)
+    gs = fig.add_gridspec(5, 1, height_ratios=[2, 0.6, 1, 1, 1])
+    
+    # 1. Price Chart
     ax1 = fig.add_subplot(gs[0])
     ax1.plot(hist.index, hist['Close'], label='QQQ', color='black', alpha=0.7)
     ax1.plot(hist.index, hist['MA20'], label='20MA', color='green', ls='--', lw=1)
@@ -277,6 +281,7 @@ def create_charts(data):
     ax1.grid(True, alpha=0.3)
     plt.setp(ax1.get_xticklabels(), visible=False)
     
+    # 2. Volume Chart
     ax_vol = fig.add_subplot(gs[1], sharex=ax1)
     colors = ['red' if c < o else 'green' for c, o in zip(hist['Close'], hist['Open'])]
     ax_vol.bar(hist.index, hist['Volume'], color=colors, alpha=0.5)
@@ -285,20 +290,43 @@ def create_charts(data):
     ax_vol.grid(True, alpha=0.3)
     plt.setp(ax_vol.get_xticklabels(), visible=False)
 
-    ax2 = fig.add_subplot(gs[2], sharex=ax1)
+    # 3. RSI Chart (신규 추가)
+    ax_rsi = fig.add_subplot(gs[2], sharex=ax1)
+    ax_rsi.plot(hist.index, hist['RSI'], color='purple', label='RSI')
+    
+    # RSI 기준선
+    ax_rsi.axhline(70, color='red', ls='--', alpha=0.7)
+    ax_rsi.axhline(30, color='green', ls='--', alpha=0.7)
+    ax_rsi.axhline(50, color='black', lw=0.5, alpha=0.5)
+    
+    # RSI 채우기 효과 (과열/과매도)
+    ax_rsi.fill_between(hist.index, hist['RSI'], 70, where=(hist['RSI'] >= 70), color='red', alpha=0.3)
+    ax_rsi.fill_between(hist.index, hist['RSI'], 30, where=(hist['RSI'] <= 30), color='green', alpha=0.3)
+    
+    ax_rsi.set_ylim(0, 100)
+    ax_rsi.set_title('RSI (14)', fontsize=12, fontweight='bold')
+    ax_rsi.grid(True, alpha=0.3)
+    plt.setp(ax_rsi.get_xticklabels(), visible=False)
+
+    # 4. MACD Chart
+    ax2 = fig.add_subplot(gs[3], sharex=ax1)
     ax2.plot(hist.index, hist['MACD'], label='MACD', color='blue')
     ax2.plot(hist.index, hist['Signal'], label='Signal', color='orange')
     ax2.bar(hist.index, hist['MACD']-hist['Signal'], color='gray', alpha=0.3)
     ax2.axhline(0, color='black', lw=0.8)
+    
     crosses = np.sign(hist['MACD'] - hist['Signal']).diff()
     golden = hist[crosses == 2]
     death = hist[crosses == -2]
+    
     ax2.scatter(golden.index, golden['MACD'], color='red', marker='^', s=100, zorder=5)
     ax2.scatter(death.index, death['MACD'], color='blue', marker='v', s=100, zorder=5)
     ax2.set_title('MACD', fontsize=12, fontweight='bold')
     ax2.grid(True, alpha=0.3)
+    plt.setp(ax2.get_xticklabels(), visible=False)
     
-    ax3 = fig.add_subplot(gs[3], sharex=ax1)
+    # 5. VIX Chart
+    ax3 = fig.add_subplot(gs[4], sharex=ax1)
     ax3.plot(data['vix_hist'].index, data['vix_hist']['Close'], color='purple', label='VIX')
     ax3.axhline(30, color='red', ls='--')
     ax3.axhline(20, color='green', ls='--')
