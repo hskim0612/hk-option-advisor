@@ -15,7 +15,7 @@ APP_PASSWORD = "1979"
 
 # === [페이지 기본 설정] ===
 st.set_page_config(
-    page_title="HK 옵션투자자문 (Expert v18.0 - Dynamic Exit)",
+    page_title="HK 옵션투자자문 (Expert v18.1 - Intuitive UI)",
     page_icon="📊",
     layout="wide"
 )
@@ -215,19 +215,11 @@ def analyze_expert_logic(d):
 
     return season, score, log
 
-# === [3] 전략 탐색 및 행동 결정 (수정됨: Dynamic Exit Matrix) ===
+# === [3] 전략 탐색 및 행동 결정 (Dynamic Exit Matrix) ===
 def determine_action(score, season, data):
-    """
-    점수에 따라 달라지는 청산(Exit) 전략을 반환합니다.
-    입력: 점수, 계절, 데이터(VIX)
-    """
-    # 1. VIX 급등 감지 (안전장치)
     vix_pct_change = ((data['vix'] - data['vix_prev']) / data['vix_prev']) * 100
     
-    # 기본 고정 값
     TARGET_DELTA = -0.10
-    
-    # 반환 형식: (Target Delta, Verdict Text, Profit Target, Stop Loss, Matrix_ID)
     
     # 1. Panic Condition
     if vix_pct_change > 15.0:
@@ -268,12 +260,10 @@ def find_best_option(price, iv, target_delta):
         for d_str in options:
             d_date = datetime.strptime(d_str, "%Y-%m-%d")
             days_left = (d_date - now).days
-            # 45일 이상이면서 가장 가까운 날짜 찾기
             if days_left >= TARGET_DTE_MIN:
                 valid_dates.append((d_str, days_left))
         
         if not valid_dates: return None
-        # DTE가 가장 작은 것(즉, 45일에 가장 근접한 것) 선택
         expiry, dte = min(valid_dates, key=lambda x: x[1])
         
         T = dte / 365.0
@@ -282,7 +272,6 @@ def find_best_option(price, iv, target_delta):
         min_diff = 1.0
         found_delta = 0
         
-        # 풋 옵션 탐색
         for strike in range(int(price * 0.5), int(price)):
             d = calculate_put_delta(price, strike, T, r, iv)
             diff = abs(d - target_delta)
@@ -307,7 +296,6 @@ def create_charts(data):
     
     gs = fig.add_gridspec(5, 1, height_ratios=[2, 0.6, 1, 1, 1])
     
-    # 1. Price
     ax1 = fig.add_subplot(gs[0])
     ax1.plot(hist.index, hist['Close'], label='QQQ', color='black', alpha=0.7)
     ax1.plot(hist.index, hist['MA20'], label='20MA', color='green', ls='--', lw=1)
@@ -319,7 +307,6 @@ def create_charts(data):
     ax1.grid(True, alpha=0.3)
     plt.setp(ax1.get_xticklabels(), visible=False)
     
-    # 2. Volume
     ax_vol = fig.add_subplot(gs[1], sharex=ax1)
     colors = ['red' if c < o else 'green' for c, o in zip(hist['Close'], hist['Open'])]
     ax_vol.bar(hist.index, hist['Volume'], color=colors, alpha=0.5)
@@ -328,7 +315,6 @@ def create_charts(data):
     ax_vol.grid(True, alpha=0.3)
     plt.setp(ax_vol.get_xticklabels(), visible=False)
 
-    # 3. RSI
     ax_rsi = fig.add_subplot(gs[2], sharex=ax1)
     ax_rsi.plot(hist.index, hist['RSI'], color='purple', label='RSI')
     ax_rsi.axhline(70, color='red', ls='--', alpha=0.7)
@@ -341,7 +327,6 @@ def create_charts(data):
     ax_rsi.grid(True, alpha=0.3)
     plt.setp(ax_rsi.get_xticklabels(), visible=False)
 
-    # 4. MACD
     ax2 = fig.add_subplot(gs[3], sharex=ax1)
     ax2.plot(hist.index, hist['MACD'], label='MACD', color='blue')
     ax2.plot(hist.index, hist['Signal'], label='Signal', color='orange')
@@ -358,7 +343,6 @@ def create_charts(data):
     ax2.grid(True, alpha=0.3)
     plt.setp(ax2.get_xticklabels(), visible=False)
     
-    # 5. VIX
     ax3 = fig.add_subplot(gs[4], sharex=ax1)
     ax3.plot(data['vix_hist'].index, data['vix_hist']['Close'], color='purple', label='VIX')
     ax3.axhline(30, color='red', ls='--')
@@ -371,7 +355,7 @@ def create_charts(data):
 
 # === [메인 화면] ===
 def main():
-    st.title("📊 QQQ Expert Advisory (Dynamic Exit v18.0)")
+    st.title("📊 QQQ Expert Advisory (v18.1 Intuitive)")
     st.caption(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     with st.spinner('분석 중...'):
@@ -384,7 +368,6 @@ def main():
             st.error(f"오류 발생: {e}")
             return
 
-    # === [수정됨] Escape 모드 하이라이트를 위한 로직 개선 ===
     def hl_score(category, row_state, col_season):
         base = 'style="border: 1px solid #ddd; padding: 8px; color: black; background-color: white;"'
         
@@ -425,7 +408,7 @@ def main():
     """
     st.markdown(textwrap.dedent(html_season), unsafe_allow_html=True)
 
-    # HTML 2: Scorecard
+    # === [수정됨] HTML 2: Scorecard (직관적 설명 추가) ===
     html_score = f"""
     <h3>2. Expert Matrix Scorecard</h3>
     <table style="border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 14px; text-align: center;">
@@ -434,7 +417,8 @@ def main():
             <th {th_style}>☀️</th><th {th_style}>🍂</th><th {th_style}>❄️</th><th {th_style}>🌱</th>
             <th {th_style}>Logic</th>
         </tr>
-        <tr><td rowspan="4" {td_style}>RSI</td>
+        
+        <tr><td rowspan="4" {td_style}>RSI<br><span style="font-size:11px; color:#888; font-weight:normal">지금 싼가? 비싼가?</span></td>
             <td {td_style}>과열 (>70)</td>
             <td {hl_score('rsi', 'over', 'SUMMER')}>-1</td><td {hl_score('rsi', 'over', 'AUTUMN')}>-3</td><td {hl_score('rsi', 'over', 'WINTER')}>-5</td><td {hl_score('rsi', 'over', 'SPRING')}>-2</td>
             <td align="left" {td_style}>가짜 반등</td></tr>
@@ -447,6 +431,7 @@ def main():
         <tr><td {td_style}>🚀 탈출 (1~7일)</td>
             <td {hl_score('rsi', 'escape', 'SUMMER')}>3~5</td><td {hl_score('rsi', 'escape', 'AUTUMN')}>3~5</td><td {hl_score('rsi', 'escape', 'WINTER')}>3~5</td><td {hl_score('rsi', 'escape', 'SPRING')}>3~5</td>
             <td align="left" {td_style}><b>Best Timing</b></td></tr>
+            
         <tr><td rowspan="4" {td_style}>VIX</td>
             <td {td_style}>안정 (<20)</td>
             <td {hl_score('vix', 'stable', 'SUMMER')}>+2</td><td {hl_score('vix', 'stable', 'AUTUMN')}>0</td><td {hl_score('vix', 'stable', 'WINTER')}>-2</td><td {hl_score('vix', 'stable', 'SPRING')}>+1</td>
@@ -460,6 +445,7 @@ def main():
         <tr><td {td_style}>📉 꺾임</td>
             <td {hl_score('vix', 'peak_out', 'SUMMER')}>-</td><td {hl_score('vix', 'peak_out', 'AUTUMN')}>-</td><td {hl_score('vix', 'peak_out', 'WINTER')}>+7</td><td {hl_score('vix', 'peak_out', 'SPRING')}>-</td>
             <td align="left" {td_style}><b>Sniper</b></td></tr>
+            
         <tr><td rowspan="3" {td_style}>BB</td>
             <td {td_style}>밴드 내부</td>
             <td {hl_score('bb', 'in', 'SUMMER')}>0</td><td {hl_score('bb', 'in', 'AUTUMN')}>0</td><td {hl_score('bb', 'in', 'WINTER')}>0</td><td {hl_score('bb', 'in', 'SPRING')}>0</td>
@@ -470,40 +456,40 @@ def main():
         <tr><td {td_style}>↩️ 복귀</td>
             <td {hl_score('bb', 'return', 'SUMMER')}>+4</td><td {hl_score('bb', 'return', 'AUTUMN')}>+3</td><td {hl_score('bb', 'return', 'WINTER')}>+5</td><td {hl_score('bb', 'return', 'SPRING')}>+4</td>
             <td align="left" {td_style}><b>Close In</b></td></tr>
-        <tr><td {td_style}>추세</td><td {td_style}>20일선 위</td>
+            
+        <tr><td {td_style}>추세 (20MA)<br><span style="font-size:11px; color:#888; font-weight:normal">지금 당장의 추세모습</span></td><td {td_style}>20일선 위</td>
             <td {hl_score('trend', 'up', 'SUMMER')}>+2</td><td {hl_score('trend', 'up', 'AUTUMN')}>+2</td><td {hl_score('trend', 'up', 'WINTER')}>+3</td><td {hl_score('trend', 'up', 'SPRING')}>+3</td>
             <td align="left" {td_style}>회복</td></tr>
+            
         <tr><td {td_style}>거래량</td><td {td_style}>폭증 (>150%)</td>
             <td {hl_score('vol', 'explode', 'SUMMER')}>+2</td><td {hl_score('vol', 'explode', 'AUTUMN')}>+3</td><td {hl_score('vol', 'explode', 'WINTER')}>+3</td><td {hl_score('vol', 'explode', 'SPRING')}>+2</td>
             <td align="left" {td_style}><b>손바뀜</b></td></tr>
         <tr><td {td_style}>거래량</td><td {td_style}>일반</td>
             <td {hl_score('vol', 'normal', 'SUMMER')}>0</td><td {hl_score('vol', 'normal', 'AUTUMN')}>0</td><td {hl_score('vol', 'normal', 'WINTER')}>0</td><td {hl_score('vol', 'normal', 'SPRING')}>0</td>
             <td align="left" {td_style}>-</td></tr>
-        <tr><td rowspan="4" {td_style}>MACD</td>
-            <td {td_style}>🚀 수면 돌파</td>
+            
+        <tr><td rowspan="4" {td_style}>MACD<br><span style="font-size:11px; color:#888; font-weight:normal">상승장? 하락장?<br>(방향을 이끄는 힘)</span></td>
+            <td {td_style}>📈 상승 전환<br>(골든크로스)</td>
             <td {hl_score('macd', 'break_up', 'SUMMER')}>+3</td><td {hl_score('macd', 'break_up', 'AUTUMN')}>+3</td><td {hl_score('macd', 'break_up', 'WINTER')}>+3</td><td {hl_score('macd', 'break_up', 'SPRING')}>+3</td>
             <td align="left" {td_style}><b>강력 매수</b></td></tr>
-        <tr><td {td_style}>수면 위 (>0)</td>
+        <tr><td {td_style}>☁️ 상승 추세<br>(에너지 강)</td>
             <td {hl_score('macd', 'above', 'SUMMER')}>+1</td><td {hl_score('macd', 'above', 'AUTUMN')}>+1</td><td {hl_score('macd', 'above', 'WINTER')}>+1</td><td {hl_score('macd', 'above', 'SPRING')}>+1</td>
             <td align="left" {td_style}>순풍</td></tr>
-        <tr><td {td_style}>🌊 수면 추락</td>
+        <tr><td {td_style}>📉 하락 전환<br>(데드크로스)</td>
             <td {hl_score('macd', 'break_down', 'SUMMER')}>-3</td><td {hl_score('macd', 'break_down', 'AUTUMN')}>-3</td><td {hl_score('macd', 'break_down', 'WINTER')}>-3</td><td {hl_score('macd', 'break_down', 'SPRING')}>-3</td>
             <td align="left" {td_style}><b>강력 매도</b></td></tr>
-        <tr><td {td_style}>수면 아래 (<0)</td>
+        <tr><td {td_style}>☔ 하락 추세<br>(에너지 약)</td>
             <td {hl_score('macd', 'below', 'SUMMER')}>-1</td><td {hl_score('macd', 'below', 'AUTUMN')}>-1</td><td {hl_score('macd', 'below', 'WINTER')}>-1</td><td {hl_score('macd', 'below', 'SPRING')}>-1</td>
             <td align="left" {td_style}>역풍</td></tr>
     </table>
     """
     st.markdown(textwrap.dedent(html_score), unsafe_allow_html=True)
 
-    # === [수정됨] HTML 3: Final Verdict & Dynamic Exit Matrix ===
-    # 스타일 헬퍼 함수
+    # HTML 3: Final Verdict
     def get_matrix_style(current_id, row_id, bg_color):
         if current_id == row_id:
-            # Highlight: 배경색 적용, 테두리 진하게, 글씨 두껍게
             return f'style="background-color: {bg_color}; border: 3px solid #666; font-weight: bold; color: #333; height: 50px;"'
         else:
-            # Normal: 흰 배경, 연한 테두리
             return 'style="background-color: white; border: 1px solid #eee; color: #999;"'
 
     html_verdict = f"""
