@@ -103,7 +103,7 @@ def get_market_data():
         'hist': hist, 'vix_hist': vix_hist
     }
 
-# === [2] 전문가 로직 ===
+# === [2] 전문가 로직 (수정됨: RSI 사각지대 제거) ===
 def analyze_expert_logic(d):
     if d['price'] > d['ma50'] and d['price'] > d['ma200']: season = "SUMMER"
     elif d['price'] < d['ma50'] and d['price'] > d['ma200']: season = "AUTUMN"
@@ -113,25 +113,28 @@ def analyze_expert_logic(d):
     score = 0
     log = {}
     
-    # RSI
+    # RSI Logic (Updated: No Dead Zones)
     if d['rsi_prev'] < 30 and d['rsi'] >= 30:
+        # [Escape] 과매도 탈출 (강력한 신호)
         pts = 6 if season == "WINTER" else 5
         score += pts
         log['rsi'] = 'escape'
-    elif d['rsi'] > 70:
+    elif d['rsi'] >= 70:
+        # [Over] 과매수 (>= 70)
         pts = -1 if season == "SUMMER" else -3 if season == "AUTUMN" else -5 if season == "WINTER" else -2
         score += pts
         log['rsi'] = 'over'
-    elif 45 <= d['rsi'] <= 65:
-        pts = 1 if season == "SUMMER" or season == "SPRING" else 0 if season == "AUTUMN" else -1
-        score += pts
-        log['rsi'] = 'neutral'
     elif d['rsi'] < 30:
+        # [Under] 과매도 (< 30)
         pts = 5 if season == "SUMMER" else 4 if season == "AUTUMN" or season == "SPRING" else 0
         score += pts
         log['rsi'] = 'under'
     else:
-        log['rsi'] = 'none'
+        # [Neutral] 그 외 모든 구간 (30~70 사이)
+        # 기존 45-65 점수 로직을 이 구간 전체에 적용
+        pts = 1 if season == "SUMMER" or season == "SPRING" else 0 if season == "AUTUMN" else -1
+        score += pts
+        log['rsi'] = 'neutral'
 
     # VIX
     if d['vix'] > 35:
@@ -260,16 +263,14 @@ def find_best_option(price, iv, target_delta):
     except:
         return None
 
-# === [4] 차트 (수정됨: RSI 추가) ===
+# === [4] 차트 (RSI 그래프 포함) ===
 def create_charts(data):
     hist = data['hist']
-    # 전체 높이를 조금 늘려서(14 -> 16) 그래프 간격을 확보
     fig = plt.figure(figsize=(10, 16))
     
-    # 5개의 행으로 변경 (Price, Volume, RSI, MACD, VIX)
     gs = fig.add_gridspec(5, 1, height_ratios=[2, 0.6, 1, 1, 1])
     
-    # 1. Price Chart
+    # 1. Price
     ax1 = fig.add_subplot(gs[0])
     ax1.plot(hist.index, hist['Close'], label='QQQ', color='black', alpha=0.7)
     ax1.plot(hist.index, hist['MA20'], label='20MA', color='green', ls='--', lw=1)
@@ -281,7 +282,7 @@ def create_charts(data):
     ax1.grid(True, alpha=0.3)
     plt.setp(ax1.get_xticklabels(), visible=False)
     
-    # 2. Volume Chart
+    # 2. Volume
     ax_vol = fig.add_subplot(gs[1], sharex=ax1)
     colors = ['red' if c < o else 'green' for c, o in zip(hist['Close'], hist['Open'])]
     ax_vol.bar(hist.index, hist['Volume'], color=colors, alpha=0.5)
@@ -290,25 +291,20 @@ def create_charts(data):
     ax_vol.grid(True, alpha=0.3)
     plt.setp(ax_vol.get_xticklabels(), visible=False)
 
-    # 3. RSI Chart (신규 추가)
+    # 3. RSI (New)
     ax_rsi = fig.add_subplot(gs[2], sharex=ax1)
     ax_rsi.plot(hist.index, hist['RSI'], color='purple', label='RSI')
-    
-    # RSI 기준선
     ax_rsi.axhline(70, color='red', ls='--', alpha=0.7)
     ax_rsi.axhline(30, color='green', ls='--', alpha=0.7)
     ax_rsi.axhline(50, color='black', lw=0.5, alpha=0.5)
-    
-    # RSI 채우기 효과 (과열/과매도)
     ax_rsi.fill_between(hist.index, hist['RSI'], 70, where=(hist['RSI'] >= 70), color='red', alpha=0.3)
     ax_rsi.fill_between(hist.index, hist['RSI'], 30, where=(hist['RSI'] <= 30), color='green', alpha=0.3)
-    
     ax_rsi.set_ylim(0, 100)
     ax_rsi.set_title('RSI (14)', fontsize=12, fontweight='bold')
     ax_rsi.grid(True, alpha=0.3)
     plt.setp(ax_rsi.get_xticklabels(), visible=False)
 
-    # 4. MACD Chart
+    # 4. MACD
     ax2 = fig.add_subplot(gs[3], sharex=ax1)
     ax2.plot(hist.index, hist['MACD'], label='MACD', color='blue')
     ax2.plot(hist.index, hist['Signal'], label='Signal', color='orange')
@@ -325,7 +321,7 @@ def create_charts(data):
     ax2.grid(True, alpha=0.3)
     plt.setp(ax2.get_xticklabels(), visible=False)
     
-    # 5. VIX Chart
+    # 5. VIX
     ax3 = fig.add_subplot(gs[4], sharex=ax1)
     ax3.plot(data['vix_hist'].index, data['vix_hist']['Close'], color='purple', label='VIX')
     ax3.axhline(30, color='red', ls='--')
@@ -351,28 +347,20 @@ def main():
             st.error(f"오류 발생: {e}")
             return
 
-    # === [수정됨] 모바일 다크 모드 대비: 글자색 강제 지정 (color: black) ===
-    
     def hl_score(category, row_state, col_season):
-        # 기본: 검은 글씨 + 연한 회색 배경
         base = 'style="border: 1px solid #ddd; padding: 8px; color: black; background-color: white;"'
         if log.get(category) == row_state and season == col_season:
-            # 강조: 주황색 글씨 + 노란 배경
             return 'style="border: 3px solid #FF5722; background-color: #FFF8E1; font-weight: bold; color: #D84315; padding: 8px;"'
         return base
 
     def hl_season(row_season):
         if season == row_season:
-            # 현재 계절 강조: 파란 배경 + 검은 글씨
             return 'style="border: 3px solid #2196F3; background-color: #E3F2FD; font-weight: bold; color: black; padding: 8px;"'
-        # 일반 계절: 흰 배경 + 검은 글씨
         return 'style="border: 1px solid #ddd; padding: 8px; color: black; background-color: white;"'
 
-    # 공통 스타일: 검은 글씨, 흰 배경 강제
     td_style = 'style="border: 1px solid #ddd; padding: 8px; color: black; background-color: white;"'
     th_style = 'style="border: 1px solid #ddd; padding: 8px; color: black; background-color: #f2f2f2;"'
 
-    # HTML 1: Season
     html_season = f"""
     <h3>1. Market Season Matrix</h3>
     <table style="border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 14px; text-align: center;">
@@ -388,7 +376,6 @@ def main():
     """
     st.markdown(textwrap.dedent(html_season), unsafe_allow_html=True)
 
-    # HTML 2: Scorecard
     html_score = f"""
     <h3>2. Expert Matrix Scorecard</h3>
     <table style="border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 14px; text-align: center;">
@@ -459,7 +446,6 @@ def main():
     """
     st.markdown(textwrap.dedent(html_score), unsafe_allow_html=True)
 
-    # HTML 3: Verdict
     html_verdict = f"""
     <h3>3. Final Verdict: <span style="color:blue; font-size:1.2em;">{score}점</span></h3>
     <table style="border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 14px; text-align: center;">
@@ -482,7 +468,6 @@ def main():
     """
     st.markdown(textwrap.dedent(html_verdict), unsafe_allow_html=True)
 
-    # HTML 4: Manual
     if strategy:
         html_manual = f"""
         <div style="border: 2px solid #2196F3; padding: 15px; margin-top: 20px; border-radius: 10px; background-color: #ffffff; color: black;">
