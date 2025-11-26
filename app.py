@@ -15,7 +15,7 @@ APP_PASSWORD = "1979"
 
 # === [페이지 기본 설정] ===
 st.set_page_config(
-    page_title="HK 옵션투자자문 (Expert v17.9)",
+    page_title="HK 옵션투자자문 (Expert v18.0 - Dynamic Exit)",
     page_icon="📊",
     layout="wide"
 )
@@ -103,7 +103,7 @@ def get_market_data():
         'hist': hist, 'vix_hist': vix_hist
     }
 
-# === [2] 전문가 로직 (수정됨: RSI Time-Decay & VIX 전략) ===
+# === [2] 전문가 로직 (RSI Time-Decay & VIX 전략) ===
 def analyze_expert_logic(d):
     if d['price'] > d['ma50'] and d['price'] > d['ma200']: season = "SUMMER"
     elif d['price'] < d['ma50'] and d['price'] > d['ma200']: season = "AUTUMN"
@@ -113,60 +113,40 @@ def analyze_expert_logic(d):
     score = 0
     log = {}
     
-    # --- [RSI Logic: Time-Decay 적용] ---
-    # 탈출(Escape) 며칠째인지 계산
-    # 최근 10일간의 데이터를 역추적하여 언제 30을 돌파했는지 확인
+    # --- RSI Logic ---
     hist_rsi = d['hist']['RSI']
     curr_rsi = d['rsi']
-    
     days_since_escape = 0
     is_escape_mode = False
 
-    # 현재 30 이상인 경우에만 '탈출' 여부 검사
     if curr_rsi >= 30:
-        # 오늘(idx -1)부터 과거로 9일 전까지 조회
         for i in range(1, 10):
-            # -1: 오늘, -2: 1일전, -3: 2일전 ...
             check_idx = -1 - i
-            # 데이터 범위 체크
             if abs(check_idx) > len(hist_rsi): break
-            
-            # i일 전에는 30 미만이었는가? (즉, i일 전에 물속에 있었다)
             if hist_rsi.iloc[check_idx] < 30:
-                days_since_escape = i  # i일 전에 30 미만이었음 -> 오늘은 탈출 i일차
+                days_since_escape = i
                 is_escape_mode = True
                 break
     
-    # RSI 점수 부여 로직
     if curr_rsi < 30:
-        # [Under] 과매도 (< 30)
         pts = 5 if season == "SUMMER" else 4 if season == "AUTUMN" or season == "SPRING" else 0
         score += pts
         log['rsi'] = 'under'
-        
     elif is_escape_mode and days_since_escape <= 7:
-        # [Escape] 탈출 후 경과일에 따른 정규분포형 점수 (사용자 정의)
-        # 1일차: +3, 2일차: +4, 3일차: +5 (Peak), 4일차: +4, 5일차: +3, 6일차: +2, 7일차: +1
         score_map = {1: 3, 2: 4, 3: 5, 4: 4, 5: 3, 6: 2, 7: 1}
         pts = score_map.get(days_since_escape, 0)
-        
         score += pts
-        # 로그에 'escape_day_X' 형태로 기록하여 하이라이팅 구분
         log['rsi'] = f'escape_day_{days_since_escape}'
-        
     elif curr_rsi >= 70:
-        # [Over] 과매수 (>= 70)
         pts = -1 if season == "SUMMER" else -3 if season == "AUTUMN" else -5 if season == "WINTER" else -2
         score += pts
         log['rsi'] = 'over'
-        
     else:
-        # [Neutral] 그 외 모든 구간 (탈출 모드도 아니고, 과열/침체도 아님)
         pts = 1 if season == "SUMMER" or season == "SPRING" else 0 if season == "AUTUMN" else -1
         score += pts
         log['rsi'] = 'neutral'
 
-    # --- [VIX Logic: 강세장 안정권 가산점] ---
+    # --- VIX Logic ---
     if d['vix'] > 35:
         if d['vix'] < d['vix_prev']:
             pts = 7 if season == "WINTER" else 0
@@ -177,7 +157,6 @@ def analyze_expert_logic(d):
             score += pts
             log['vix'] = 'panic_rise'
     elif d['vix'] < 20:
-        # [Stable] SUMMER(+2), SPRING(+1)
         pts = 2 if season == "SUMMER" else 1 if season == "SPRING" else -2 if season == "WINTER" else 0
         score += pts
         log['vix'] = 'stable'
@@ -236,17 +215,40 @@ def analyze_expert_logic(d):
 
     return season, score, log
 
-def determine_action(score, season):
-    if score >= 10:
-        return -0.30, "💎 강력 매수 (Aggressive)"
-    elif 5 <= score < 10:
-        return -0.20, "⚖️ 매수 우위 (Standard)"
-    elif 0 <= score < 5:
-        return -0.10, "🛡️ 중립/관망 (Very Safe)"
-    else:
-        return None, "⛔ 진입 금지 (No Entry)"
+# === [3] 전략 탐색 및 행동 결정 (수정됨: Dynamic Exit Matrix) ===
+def determine_action(score, season, data):
+    """
+    점수에 따라 달라지는 청산(Exit) 전략을 반환합니다.
+    입력: 점수, 계절, 데이터(VIX)
+    """
+    # 1. VIX 급등 감지 (안전장치)
+    vix_pct_change = ((data['vix'] - data['vix_prev']) / data['vix_prev']) * 100
+    
+    # 기본 고정 값
+    TARGET_DELTA = -0.10
+    
+    # 반환 형식: (Target Delta, Verdict Text, Profit Target, Stop Loss, Matrix_ID)
+    
+    # 1. Panic Condition
+    if vix_pct_change > 15.0:
+        return TARGET_DELTA, "⛔ 매매 중단 (VIX 급등)", "-", "-", "panic"
 
-# === [3] 전략 탐색 ===
+    # 2. Strong Trend (강세장)
+    if score >= 12:
+        return TARGET_DELTA, "💎 추세 추종 (Strong)", "75%", "300%", "strong"
+    
+    # 3. Standard (평범)
+    elif 8 <= score < 12:
+        return TARGET_DELTA, "✅ 표준 대응 (Standard)", "50%", "200%", "standard"
+        
+    # 4. Hit & Run (약세/주의)
+    elif 5 <= score < 8:
+        return TARGET_DELTA, "⚠️ 속전 속결 (Hit & Run)", "30%", "150%", "weak"
+        
+    # 5. No Entry (관망)
+    else:
+        return None, "🛡️ 진입 보류", "-", "-", "no_entry"
+
 def calculate_put_delta(S, K, T, r, sigma):
     if T <= 0 or sigma <= 0: return -0.5
     d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
@@ -255,8 +257,8 @@ def calculate_put_delta(S, K, T, r, sigma):
 def find_best_option(price, iv, target_delta):
     if target_delta is None: return None
     
-    TARGET_DTE_MIN = 45
-    SPREAD_WIDTH = 10
+    TARGET_DTE_MIN = 45  # [고정] 만기 45일 선호
+    SPREAD_WIDTH = 5     # [고정] 스프레드 폭 5달러
     
     qqq = yf.Ticker("QQQ")
     try:
@@ -266,10 +268,12 @@ def find_best_option(price, iv, target_delta):
         for d_str in options:
             d_date = datetime.strptime(d_str, "%Y-%m-%d")
             days_left = (d_date - now).days
+            # 45일 이상이면서 가장 가까운 날짜 찾기
             if days_left >= TARGET_DTE_MIN:
                 valid_dates.append((d_str, days_left))
         
         if not valid_dates: return None
+        # DTE가 가장 작은 것(즉, 45일에 가장 근접한 것) 선택
         expiry, dte = min(valid_dates, key=lambda x: x[1])
         
         T = dte / 365.0
@@ -278,6 +282,7 @@ def find_best_option(price, iv, target_delta):
         min_diff = 1.0
         found_delta = 0
         
+        # 풋 옵션 탐색
         for strike in range(int(price * 0.5), int(price)):
             d = calculate_put_delta(price, strike, T, r, iv)
             diff = abs(d - target_delta)
@@ -289,7 +294,8 @@ def find_best_option(price, iv, target_delta):
         return {
             'expiry': expiry, 'dte': dte,
             'short': best_strike, 'long': best_strike - SPREAD_WIDTH,
-            'delta': found_delta
+            'delta': found_delta,
+            'width': SPREAD_WIDTH
         }
     except:
         return None
@@ -365,14 +371,14 @@ def create_charts(data):
 
 # === [메인 화면] ===
 def main():
-    st.title("📊 QQQ Expert Advisory (v17.9)")
+    st.title("📊 QQQ Expert Advisory (Dynamic Exit v18.0)")
     st.caption(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     with st.spinner('분석 중...'):
         try:
             data = get_market_data()
             season, score, log = analyze_expert_logic(data)
-            target_delta, verdict = determine_action(score, season)
+            target_delta, verdict_text, profit_target, stop_loss, matrix_id = determine_action(score, season, data)
             strategy = find_best_option(data['price'], data['iv'], target_delta)
         except Exception as e:
             st.error(f"오류 발생: {e}")
@@ -384,10 +390,9 @@ def main():
         
         current_val = log.get(category, '')
         
-        # Escape 모드는 'escape_day_X' 형식이므로 'escape' 문자열이 포함되어 있으면 매치로 인정
         is_match = False
         if category == 'rsi' and row_state == 'escape':
-            if 'escape' in current_val: # escape_day_1, escape_day_2 ... 모두 포함
+            if 'escape' in current_val:
                 is_match = True
         else:
             if current_val == row_state:
@@ -420,7 +425,7 @@ def main():
     """
     st.markdown(textwrap.dedent(html_season), unsafe_allow_html=True)
 
-    # HTML 2: Scorecard (Escape 행 텍스트 수정: 3~5pt Dynamic)
+    # HTML 2: Scorecard
     html_score = f"""
     <h3>2. Expert Matrix Scorecard</h3>
     <table style="border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 14px; text-align: center;">
@@ -491,52 +496,90 @@ def main():
     """
     st.markdown(textwrap.dedent(html_score), unsafe_allow_html=True)
 
+    # === [수정됨] HTML 3: Final Verdict & Dynamic Exit Matrix ===
+    # 스타일 헬퍼 함수
+    def get_matrix_style(current_id, row_id, bg_color):
+        if current_id == row_id:
+            # Highlight: 배경색 적용, 테두리 진하게, 글씨 두껍게
+            return f'style="background-color: {bg_color}; border: 3px solid #666; font-weight: bold; color: #333; height: 50px;"'
+        else:
+            # Normal: 흰 배경, 연한 테두리
+            return 'style="background-color: white; border: 1px solid #eee; color: #999;"'
+
     html_verdict = f"""
-    <h3>3. Final Verdict: <span style="color:blue; font-size:1.2em;">{score}점</span></h3>
-    <table style="border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 14px; text-align: center;">
-        <tr>
-            <th {th_style}>점수</th><th {th_style}>판정</th><th {th_style}>추천 델타</th><th {th_style}>성격</th>
-        </tr>
-        <tr style="{'background-color:#dff0d8' if score>=10 else ''}">
-            <td {td_style}>10점↑</td><td {td_style}>💎 강력 매수</td><td {td_style}>-0.30 (Aggressive)</td><td {td_style}>공격형</td>
-        </tr>
-        <tr style="{'background-color:#dff0d8' if 5<=score<10 else ''}">
-            <td {td_style}>5~9점</td><td {td_style}>⚖️ 매수 우위</td><td {td_style}>-0.20</td><td {td_style}>표준</td>
-        </tr>
-        <tr style="{'background-color:#fcf8e3' if 0<=score<5 else ''}">
-            <td {td_style}>0~4점</td><td {td_style}>🛡️ 중립/관망</td><td {td_style}>-0.10 (Safe)</td><td {td_style}>보수적</td>
-        </tr>
-        <tr style="{'background-color:#f2dede' if score<0 else ''}">
-            <td {td_style}>-1점↓</td><td {td_style}>⚠️ 위험/금지</td><td {td_style}>Hold</td><td {td_style}>회피</td>
-        </tr>
-    </table>
+    <h3>3. Final Verdict: <span style="color:blue;">{score}점</span> - Dynamic Exit Matrix</h3>
+    <div style="border: 2px solid #ccc; border-radius: 10px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
+        <table style="border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; text-align: center;">
+            <tr style="background-color: #333; color: white;">
+                <th {th_style} style="color:white;">점수 구간</th>
+                <th {th_style} style="color:white;">최종 판정</th>
+                <th {th_style} style="color:white;">🎯 익절 목표</th>
+                <th {th_style} style="color:white;">🛑 손절 라인</th>
+            </tr>
+            <tr {get_matrix_style(matrix_id, 'panic', '#ffebee')}>
+                <td>VIX 급등</td>
+                <td>⛔ 매매 중단 (Panic)</td>
+                <td>-</td>
+                <td>-</td>
+            </tr>
+            <tr {get_matrix_style(matrix_id, 'strong', '#dff0d8')}>
+                <td>12점 이상</td>
+                <td>💎 추세 추종 (Strong)</td>
+                <td style="color:green;">+75%</td>
+                <td style="color:red;">-300% (원금 3배)</td>
+            </tr>
+            <tr {get_matrix_style(matrix_id, 'standard', '#ffffff')}>
+                <td>8 ~ 11점</td>
+                <td>✅ 표준 대응 (Standard)</td>
+                <td style="color:green;">+50%</td>
+                <td style="color:red;">-200% (원금 3배)</td>
+            </tr>
+            <tr {get_matrix_style(matrix_id, 'weak', '#fff9c4')}>
+                <td>5 ~ 7점</td>
+                <td>⚠️ 속전 속결 (Hit & Run)</td>
+                <td style="color:green;">+30%</td>
+                <td style="color:red;">-150% (원금 2.5배)</td>
+            </tr>
+            <tr {get_matrix_style(matrix_id, 'no_entry', '#f2dede')}>
+                <td>5점 미만</td>
+                <td>🛡️ 진입 보류 (No Entry)</td>
+                <td>-</td>
+                <td>-</td>
+            </tr>
+        </table>
+        <div style="padding: 10px; background-color: #f9f9f9; text-align: center; color: #555; font-size: 13px;">
+            ※ <b>설정:</b> Delta -0.10 (Fixed) / DTE 45일 / Spread $5<br>
+            ※ 손절 라인은 프리미엄 가격 기준입니다. (예: $1.0 진입 시, 200% 손절은 $3.0 도달 시 청산)
+        </div>
+    </div>
     """
     st.markdown(textwrap.dedent(html_verdict), unsafe_allow_html=True)
 
-    if strategy:
+    if strategy and matrix_id != 'no_entry' and matrix_id != 'panic':
         html_manual = f"""
         <div style="border: 2px solid #2196F3; padding: 15px; margin-top: 20px; border-radius: 10px; background-color: #ffffff; color: black;">
             <h3 style="color: #2196F3; margin-top: 0;">👮‍♂️ 주문 상세 매뉴얼</h3>
             <ul style="line-height: 1.6; list-style-type: none; padding-left: 0; color: black;">
                 <li>✅ <b>종목:</b> QQQ (Put Credit Spread)</li>
                 <li>✅ <b>만기:</b> {strategy['expiry']} (DTE {strategy['dte']}일)</li>
-                <li>✅ <b>Strike:</b> Short <b style="color:red">${strategy['short']}</b> / Long <b style="color:green">${strategy['long']}</b></li>
-                <li>✅ <b>Delta:</b> {strategy['delta']:.3f}</li>
+                <li>✅ <b>Strike:</b> Short <b style="color:red">${strategy['short']}</b> / Long <b style="color:green">${strategy['long']}</b> (Width ${strategy['width']})</li>
+                <li>✅ <b>Delta:</b> {strategy['delta']:.3f} (Target: {target_delta})</li>
             </ul>
             <hr>
-            <h4 style="margin-bottom: 5px; color: black;">🛑 청산 원칙 (Exit Rules)</h4>
+            <h4 style="margin-bottom: 5px; color: black;">🛑 적용된 청산 원칙</h4>
             <ul style="line-height: 1.6; color: black;">
-                <li><b>익절 (Win):</b> 수익 <b>+50%</b> 도달 시 자동 청산.</li>
-                <li style="color: red; font-weight: bold;">손절 (Loss): 프리미엄이 진입가의 3배(-200% 손실)가 되면 즉시 청산.</li>
-                <li><b>시간 청산:</b> 만기 <b>21일 전</b>까지 승부가 안 나면 무조건 청산.</li>
+                <li><b>익절 (Take Profit):</b> 진입 프리미엄의 <b>{profit_target}</b> 이익 시 청산</li>
+                <li style="color: red; font-weight: bold;">손절 (Stop Loss): 진입 프리미엄의 {stop_loss} 도달 시 즉시 청산</li>
+                <li><b>주의:</b> 90% 비중 투자 시, 반드시 진입과 동시에 <u>감시 주문(Stop Limit)</u>을 설정하세요.</li>
             </ul>
         </div>
         """
     else:
         html_manual = """
         <div style="border: 2px solid red; padding: 15px; margin-top: 20px; border-radius: 10px; background-color: #ffebee;">
-            <h3 style="color: red; margin-top: 0;">⛔ 긴급: 매매 중단 (No Entry)</h3>
-            <p style="color: black;">현재 시장 상황은 매우 위험합니다. (진입 금지 구간)</p>
+            <h3 style="color: red; margin-top: 0;">⛔ 진입 금지 (No Entry)</h3>
+            <p style="color: black;">현재 점수 또는 시장 상황(VIX)이 신규 진입에 적합하지 않습니다.<br>
+            기존 포지션 관리(청산/롤오버)에만 집중하십시오.</p>
         </div>
         """
     st.markdown(textwrap.dedent(html_manual), unsafe_allow_html=True)
