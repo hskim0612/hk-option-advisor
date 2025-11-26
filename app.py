@@ -103,7 +103,7 @@ def get_market_data():
         'hist': hist, 'vix_hist': vix_hist
     }
 
-# === [2] 전문가 로직 (수정됨: VIX 전략 반영) ===
+# === [2] 전문가 로직 (수정됨: RSI Time-Decay & VIX 전략) ===
 def analyze_expert_logic(d):
     if d['price'] > d['ma50'] and d['price'] > d['ma200']: season = "SUMMER"
     elif d['price'] < d['ma50'] and d['price'] > d['ma200']: season = "AUTUMN"
@@ -113,25 +113,60 @@ def analyze_expert_logic(d):
     score = 0
     log = {}
     
-    # RSI Logic (No Dead Zones)
-    if d['rsi_prev'] < 30 and d['rsi'] >= 30:
-        pts = 6 if season == "WINTER" else 5
-        score += pts
-        log['rsi'] = 'escape'
-    elif d['rsi'] >= 70:
-        pts = -1 if season == "SUMMER" else -3 if season == "AUTUMN" else -5 if season == "WINTER" else -2
-        score += pts
-        log['rsi'] = 'over'
-    elif d['rsi'] < 30:
+    # --- [RSI Logic: Time-Decay 적용] ---
+    # 탈출(Escape) 며칠째인지 계산
+    # 최근 10일간의 데이터를 역추적하여 언제 30을 돌파했는지 확인
+    hist_rsi = d['hist']['RSI']
+    curr_rsi = d['rsi']
+    
+    days_since_escape = 0
+    is_escape_mode = False
+
+    # 현재 30 이상인 경우에만 '탈출' 여부 검사
+    if curr_rsi >= 30:
+        # 오늘(idx -1)부터 과거로 9일 전까지 조회
+        for i in range(1, 10):
+            # -1: 오늘, -2: 1일전, -3: 2일전 ...
+            check_idx = -1 - i
+            # 데이터 범위 체크
+            if abs(check_idx) > len(hist_rsi): break
+            
+            # i일 전에는 30 미만이었는가? (즉, i일 전에 물속에 있었다)
+            if hist_rsi.iloc[check_idx] < 30:
+                days_since_escape = i  # i일 전에 30 미만이었음 -> 오늘은 탈출 i일차
+                is_escape_mode = True
+                break
+    
+    # RSI 점수 부여 로직
+    if curr_rsi < 30:
+        # [Under] 과매도 (< 30)
         pts = 5 if season == "SUMMER" else 4 if season == "AUTUMN" or season == "SPRING" else 0
         score += pts
         log['rsi'] = 'under'
+        
+    elif is_escape_mode and days_since_escape <= 7:
+        # [Escape] 탈출 후 경과일에 따른 정규분포형 점수 (사용자 정의)
+        # 1일차: +3, 2일차: +4, 3일차: +5 (Peak), 4일차: +4, 5일차: +3, 6일차: +2, 7일차: +1
+        score_map = {1: 3, 2: 4, 3: 5, 4: 4, 5: 3, 6: 2, 7: 1}
+        pts = score_map.get(days_since_escape, 0)
+        
+        score += pts
+        # 로그에 'escape_day_X' 형태로 기록하여 하이라이팅 구분
+        log['rsi'] = f'escape_day_{days_since_escape}'
+        
+    elif curr_rsi >= 70:
+        # [Over] 과매수 (>= 70)
+        pts = -1 if season == "SUMMER" else -3 if season == "AUTUMN" else -5 if season == "WINTER" else -2
+        score += pts
+        log['rsi'] = 'over'
+        
     else:
+        # [Neutral] 그 외 모든 구간 (탈출 모드도 아니고, 과열/침체도 아님)
         pts = 1 if season == "SUMMER" or season == "SPRING" else 0 if season == "AUTUMN" else -1
         score += pts
         log['rsi'] = 'neutral'
 
-    # VIX Logic (수정됨: 강세장 안정권 가산점 부여)
+    # --- [VIX Logic: 강세장 안정권 가산점] ---
     if d['vix'] > 35:
         if d['vix'] < d['vix_prev']:
             pts = 7 if season == "WINTER" else 0
@@ -142,7 +177,7 @@ def analyze_expert_logic(d):
             score += pts
             log['vix'] = 'panic_rise'
     elif d['vix'] < 20:
-        # [Stable] 안정권 로직 변경: SUMMER(+2), SPRING(+1)
+        # [Stable] SUMMER(+2), SPRING(+1)
         pts = 2 if season == "SUMMER" else 1 if season == "SPRING" else -2 if season == "WINTER" else 0
         score += pts
         log['vix'] = 'stable'
@@ -343,9 +378,22 @@ def main():
             st.error(f"오류 발생: {e}")
             return
 
+    # === [수정됨] Escape 모드 하이라이트를 위한 로직 개선 ===
     def hl_score(category, row_state, col_season):
         base = 'style="border: 1px solid #ddd; padding: 8px; color: black; background-color: white;"'
-        if log.get(category) == row_state and season == col_season:
+        
+        current_val = log.get(category, '')
+        
+        # Escape 모드는 'escape_day_X' 형식이므로 'escape' 문자열이 포함되어 있으면 매치로 인정
+        is_match = False
+        if category == 'rsi' and row_state == 'escape':
+            if 'escape' in current_val: # escape_day_1, escape_day_2 ... 모두 포함
+                is_match = True
+        else:
+            if current_val == row_state:
+                is_match = True
+        
+        if is_match and season == col_season:
             return 'style="border: 3px solid #FF5722; background-color: #FFF8E1; font-weight: bold; color: #D84315; padding: 8px;"'
         return base
 
@@ -372,7 +420,7 @@ def main():
     """
     st.markdown(textwrap.dedent(html_season), unsafe_allow_html=True)
 
-    # HTML 2: Scorecard (수정됨: VIX 점수 표기 변경)
+    # HTML 2: Scorecard (Escape 행 텍스트 수정: 3~5pt Dynamic)
     html_score = f"""
     <h3>2. Expert Matrix Scorecard</h3>
     <table style="border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 14px; text-align: center;">
@@ -391,9 +439,9 @@ def main():
         <tr><td {td_style}>과매도 (<30)</td>
             <td {hl_score('rsi', 'under', 'SUMMER')}>+5</td><td {hl_score('rsi', 'under', 'AUTUMN')}>+4</td><td {hl_score('rsi', 'under', 'WINTER')}>0</td><td {hl_score('rsi', 'under', 'SPRING')}>+4</td>
             <td align="left" {td_style}>겨울 바닥 X</td></tr>
-        <tr><td {td_style}>🚀 탈출</td>
-            <td {hl_score('rsi', 'escape', 'SUMMER')}>+5</td><td {hl_score('rsi', 'escape', 'AUTUMN')}>+5</td><td {hl_score('rsi', 'escape', 'WINTER')}>+6</td><td {hl_score('rsi', 'escape', 'SPRING')}>+5</td>
-            <td align="left" {td_style}><b>Timing</b></td></tr>
+        <tr><td {td_style}>🚀 탈출 (1~7일)</td>
+            <td {hl_score('rsi', 'escape', 'SUMMER')}>3~5</td><td {hl_score('rsi', 'escape', 'AUTUMN')}>3~5</td><td {hl_score('rsi', 'escape', 'WINTER')}>3~5</td><td {hl_score('rsi', 'escape', 'SPRING')}>3~5</td>
+            <td align="left" {td_style}><b>Best Timing</b></td></tr>
         <tr><td rowspan="4" {td_style}>VIX</td>
             <td {td_style}>안정 (<20)</td>
             <td {hl_score('vix', 'stable', 'SUMMER')}>+2</td><td {hl_score('vix', 'stable', 'AUTUMN')}>0</td><td {hl_score('vix', 'stable', 'WINTER')}>-2</td><td {hl_score('vix', 'stable', 'SPRING')}>+1</td>
