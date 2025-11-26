@@ -6,16 +6,14 @@ from scipy.stats import norm
 from datetime import datetime
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-from io import BytesIO
-import base64
-import textwrap
+# textwrap 제거 (HTML 렌더링 오류 원인)
 
 # === [앱 보안 설정] ===
 APP_PASSWORD = "1979"
 
 # === [페이지 기본 설정] ===
 st.set_page_config(
-    page_title="HK 옵션투자자문 (Expert v18.3 - Fixed Table)",
+    page_title="HK 옵션투자자문 (Expert v18.4 - Rendering Fixed)",
     page_icon="📊",
     layout="wide"
 )
@@ -352,7 +350,7 @@ def create_charts(data):
 
 # === [메인 화면] ===
 def main():
-    st.title("📊 QQQ Expert Advisory (v18.3)")
+    st.title("📊 QQQ Expert Advisory (v18.4)")
     st.caption(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     with st.spinner('분석 중...'):
@@ -365,9 +363,11 @@ def main():
             st.error(f"오류 발생: {e}")
             return
 
-    # 스타일 헬퍼
+    # 스타일 헬퍼: HTML 속성은 반드시 작은따옴표(') 사용
     def hl_score(category, row_state, col_season):
-        base = 'style="border: 1px solid #ddd; padding: 8px; color: black; background-color: white;"'
+        # 기본 스타일
+        base = "style='border: 1px solid #ddd; padding: 8px; color: black; background-color: white;'"
+        
         current_val = log.get(category, '')
         is_match = False
         if category == 'rsi' and row_state == 'escape':
@@ -376,194 +376,200 @@ def main():
             if current_val == row_state: is_match = True
         
         if is_match and season == col_season:
-            return 'style="border: 3px solid #FF5722; background-color: #FFF8E1; font-weight: bold; color: #D84315; padding: 8px;"'
+            # 강조 스타일
+            return "style='border: 3px solid #FF5722; background-color: #FFF8E1; font-weight: bold; color: #D84315; padding: 8px;'"
         return base
 
     def hl_season(row_season):
         if season == row_season:
-            return 'style="border: 3px solid #2196F3; background-color: #E3F2FD; font-weight: bold; color: black; padding: 8px;"'
-        return 'style="border: 1px solid #ddd; padding: 8px; color: black; background-color: white;"'
+            return "style='border: 3px solid #2196F3; background-color: #E3F2FD; font-weight: bold; color: black; padding: 8px;'"
+        return "style='border: 1px solid #ddd; padding: 8px; color: black; background-color: white;'"
 
-    td_style = 'style="border: 1px solid #ddd; padding: 8px; color: black; background-color: white;"'
-    th_style = 'style="border: 1px solid #ddd; padding: 8px; color: black; background-color: #f2f2f2;"'
+    # 공통 스타일 정의 (작은따옴표 사용)
+    td_style = "style='border: 1px solid #ddd; padding: 8px; color: black; background-color: white;'"
+    th_style = "style='border: 1px solid #ddd; padding: 8px; color: black; background-color: #f2f2f2;'"
 
-    # 1. Season Matrix
-    html_season = f"""
-    <h3>1. Market Season Matrix</h3>
-    <table style="border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 14px; text-align: center;">
-        <tr>
-            <th {th_style}>Season</th><th {th_style}>Condition</th><th {th_style}>Character</th>
-        </tr>
-        <tr><td {hl_season('SUMMER')}>☀️ SUMMER</td><td {hl_season('SUMMER')}>Price > 50MA & 200MA</td><td {hl_season('SUMMER')}>강세장</td></tr>
-        <tr><td {hl_season('AUTUMN')}>🍂 AUTUMN</td><td {hl_season('AUTUMN')}>Price < 50MA but > 200MA</td><td {hl_season('AUTUMN')}>조정기</td></tr>
-        <tr><td {hl_season('WINTER')}>❄️ WINTER</td><td {hl_season('WINTER')}>Price < 50MA & 200MA</td><td {hl_season('WINTER')}>약세장</td></tr>
-        <tr><td {hl_season('SPRING')}>🌱 SPRING</td><td {hl_season('SPRING')}>Price > 50MA but < 200MA</td><td {hl_season('SPRING')}>회복기</td></tr>
-    </table>
-    <p>※ QQQ: <b>${data['price']:.2f}</b> (Vol: {data['vol_pct']:.1f}% of 20MA)</p>
-    """
-    st.markdown(textwrap.dedent(html_season), unsafe_allow_html=True)
+    # 1. Season Matrix (리스트 결합 방식)
+    html_season_list = [
+        "<h3>1. Market Season Matrix</h3>",
+        "<table style='border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 14px; text-align: center;'>",
+        "<tr>",
+        f"<th {th_style}>Season</th><th {th_style}>Condition</th><th {th_style}>Character</th>",
+        "</tr>",
+        f"<tr><td {hl_season('SUMMER')}>☀️ SUMMER</td><td {hl_season('SUMMER')}>Price > 50MA & 200MA</td><td {hl_season('SUMMER')}>강세장</td></tr>",
+        f"<tr><td {hl_season('AUTUMN')}>🍂 AUTUMN</td><td {hl_season('AUTUMN')}>Price < 50MA but > 200MA</td><td {hl_season('AUTUMN')}>조정기</td></tr>",
+        f"<tr><td {hl_season('WINTER')}>❄️ WINTER</td><td {hl_season('WINTER')}>Price < 50MA & 200MA</td><td {hl_season('WINTER')}>약세장</td></tr>",
+        f"<tr><td {hl_season('SPRING')}>🌱 SPRING</td><td {hl_season('SPRING')}>Price > 50MA but < 200MA</td><td {hl_season('SPRING')}>회복기</td></tr>",
+        "</table>",
+        f"<p>※ QQQ: <b>${data['price']:.2f}</b> (Vol: {data['vol_pct']:.1f}% of 20MA)</p>"
+    ]
+    st.markdown("".join(html_season_list), unsafe_allow_html=True)
 
-    # 2. Scorecard (테이블 태그 완벽 복구)
-    html_score = f"""
-    <h3>2. Expert Matrix Scorecard</h3>
-    <table style="border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 14px; text-align: center;">
-        <tr>
-            <th {th_style}>지표</th><th {th_style}>상태</th>
-            <th {th_style}>☀️</th><th {th_style}>🍂</th><th {th_style}>❄️</th><th {th_style}>🌱</th>
-            <th {th_style}>Logic</th>
-        </tr>
+    # 2. Scorecard (리스트 결합 방식)
+    html_score_list = [
+        "<h3>2. Expert Matrix Scorecard</h3>",
+        "<table style='border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 14px; text-align: center;'>",
+        "<tr>",
+        f"<th {th_style}>지표</th><th {th_style}>상태</th>",
+        f"<th {th_style}>☀️</th><th {th_style}>🍂</th><th {th_style}>❄️</th><th {th_style}>🌱</th>",
+        f"<th {th_style}>Logic</th>",
+        "</tr>",
         
-        <tr><td rowspan="4" {td_style}>RSI<br><span style="font-size:11px; color:#888; font-weight:normal">지금 싼가? 비싼가?</span></td>
-            <td {td_style}>과열 (>70)</td>
-            <td {hl_score('rsi', 'over', 'SUMMER')}>-1</td><td {hl_score('rsi', 'over', 'AUTUMN')}>-3</td><td {hl_score('rsi', 'over', 'WINTER')}>-5</td><td {hl_score('rsi', 'over', 'SPRING')}>-2</td>
-            <td align="left" {td_style}>가짜 반등</td></tr>
-        <tr><td {td_style}>중립 (45-65)</td>
-            <td {hl_score('rsi', 'neutral', 'SUMMER')}>+1</td><td {hl_score('rsi', 'neutral', 'AUTUMN')}>0</td><td {hl_score('rsi', 'neutral', 'WINTER')}>-1</td><td {hl_score('rsi', 'neutral', 'SPRING')}>+1</td>
-            <td align="left" {td_style}>-</td></tr>
-        <tr><td {td_style}>과매도 (<30)</td>
-            <td {hl_score('rsi', 'under', 'SUMMER')}>+5</td><td {hl_score('rsi', 'under', 'AUTUMN')}>+4</td><td {hl_score('rsi', 'under', 'WINTER')}>0</td><td {hl_score('rsi', 'under', 'SPRING')}>+4</td>
-            <td align="left" {td_style}>겨울 바닥 X</td></tr>
-        <tr><td {td_style}>🚀 탈출 (1~7일)</td>
-            <td {hl_score('rsi', 'escape', 'SUMMER')}>3~5</td><td {hl_score('rsi', 'escape', 'AUTUMN')}>3~5</td><td {hl_score('rsi', 'escape', 'WINTER')}>3~5</td><td {hl_score('rsi', 'escape', 'SPRING')}>3~5</td>
-            <td align="left" {td_style}><b>Best Timing</b></td></tr>
-            
-        <tr><td rowspan="4" {td_style}>VIX</td>
-            <td {td_style}>안정 (<20)</td>
-            <td {hl_score('vix', 'stable', 'SUMMER')}>+2</td><td {hl_score('vix', 'stable', 'AUTUMN')}>0</td><td {hl_score('vix', 'stable', 'WINTER')}>-2</td><td {hl_score('vix', 'stable', 'SPRING')}>+1</td>
-            <td align="left" {td_style}>저변동성</td></tr>
-        <tr><td {td_style}>공포 (20-35)</td>
-            <td {hl_score('vix', 'fear', 'SUMMER')}>-3</td><td {hl_score('vix', 'fear', 'AUTUMN')}>-4</td><td {hl_score('vix', 'fear', 'WINTER')}>+2</td><td {hl_score('vix', 'fear', 'SPRING')}>-1</td>
-            <td align="left" {td_style}>기회 탐색</td></tr>
-        <tr><td {td_style}>패닉 상승</td>
-            <td {hl_score('vix', 'panic_rise', 'SUMMER')}>-5</td><td {hl_score('vix', 'panic_rise', 'AUTUMN')}>-6</td><td {hl_score('vix', 'panic_rise', 'WINTER')}>-5</td><td {hl_score('vix', 'panic_rise', 'SPRING')}>-4</td>
-            <td align="left" {td_style}>칼날</td></tr>
-        <tr><td {td_style}>📉 꺾임</td>
-            <td {hl_score('vix', 'peak_out', 'SUMMER')}>-</td><td {hl_score('vix', 'peak_out', 'AUTUMN')}>-</td><td {hl_score('vix', 'peak_out', 'WINTER')}>+7</td><td {hl_score('vix', 'peak_out', 'SPRING')}>-</td>
-            <td align="left" {td_style}><b>Sniper</b></td></tr>
-            
-        <tr><td rowspan="3" {td_style}>BB</td>
-            <td {td_style}>밴드 내부</td>
-            <td {hl_score('bb', 'in', 'SUMMER')}>0</td><td {hl_score('bb', 'in', 'AUTUMN')}>0</td><td {hl_score('bb', 'in', 'WINTER')}>0</td><td {hl_score('bb', 'in', 'SPRING')}>0</td>
-            <td align="left" {td_style}>대기</td></tr>
-        <tr><td {td_style}>하단 이탈</td>
-            <td {hl_score('bb', 'out', 'SUMMER')}>+3</td><td {hl_score('bb', 'out', 'AUTUMN')}>+2</td><td {hl_score('bb', 'out', 'WINTER')}>-2</td><td {hl_score('bb', 'out', 'SPRING')}>+1</td>
-            <td align="left" {td_style}>가속화</td></tr>
-        <tr><td {td_style}>↩️ 복귀</td>
-            <td {hl_score('bb', 'return', 'SUMMER')}>+4</td><td {hl_score('bb', 'return', 'AUTUMN')}>+3</td><td {hl_score('bb', 'return', 'WINTER')}>+5</td><td {hl_score('bb', 'return', 'SPRING')}>+4</td>
-            <td align="left" {td_style}><b>Close In</b></td></tr>
-            
-        <tr><td {td_style}>추세 (20MA)<br><span style="font-size:11px; color:#888; font-weight:normal">지금 당장의 추세모습</span></td><td {td_style}>20일선 위</td>
-            <td {hl_score('trend', 'up', 'SUMMER')}>+2</td><td {hl_score('trend', 'up', 'AUTUMN')}>+2</td><td {hl_score('trend', 'up', 'WINTER')}>+3</td><td {hl_score('trend', 'up', 'SPRING')}>+3</td>
-            <td align="left" {td_style}>회복</td></tr>
-            
-        <tr><td {td_style}>거래량</td><td {td_style}>폭증 (>150%)</td>
-            <td {hl_score('vol', 'explode', 'SUMMER')}>+2</td><td {hl_score('vol', 'explode', 'AUTUMN')}>+3</td><td {hl_score('vol', 'explode', 'WINTER')}>+3</td><td {hl_score('vol', 'explode', 'SPRING')}>+2</td>
-            <td align="left" {td_style}><b>손바뀜</b></td></tr>
-        <tr><td {td_style}>거래량</td><td {td_style}>일반</td>
-            <td {hl_score('vol', 'normal', 'SUMMER')}>0</td><td {hl_score('vol', 'normal', 'AUTUMN')}>0</td><td {hl_score('vol', 'normal', 'WINTER')}>0</td><td {hl_score('vol', 'normal', 'SPRING')}>0</td>
-            <td align="left" {td_style}>-</td></tr>
-            
-        <tr><td rowspan="4" {td_style}>MACD<br><span style="font-size:11px; color:#888; font-weight:normal">상승장? 하락장?<br>(방향을 이끄는 힘)</span></td>
-            <td {td_style}>📈 상승 전환<br>(골든크로스)</td>
-            <td {hl_score('macd', 'break_up', 'SUMMER')}>+3</td><td {hl_score('macd', 'break_up', 'AUTUMN')}>+3</td><td {hl_score('macd', 'break_up', 'WINTER')}>+3</td><td {hl_score('macd', 'break_up', 'SPRING')}>+3</td>
-            <td align="left" {td_style}><b>강력 매수</b></td></tr>
-        <tr><td {td_style}>☁️ 상승 추세<br>(에너지 강)</td>
-            <td {hl_score('macd', 'above', 'SUMMER')}>+1</td><td {hl_score('macd', 'above', 'AUTUMN')}>+1</td><td {hl_score('macd', 'above', 'WINTER')}>+1</td><td {hl_score('macd', 'above', 'SPRING')}>+1</td>
-            <td align="left" {td_style}>순풍</td></tr>
-        <tr><td {td_style}>📉 하락 전환<br>(데드크로스)</td>
-            <td {hl_score('macd', 'break_down', 'SUMMER')}>-3</td><td {hl_score('macd', 'break_down', 'AUTUMN')}>-3</td><td {hl_score('macd', 'break_down', 'WINTER')}>-3</td><td {hl_score('macd', 'break_down', 'SPRING')}>-3</td>
-            <td align="left" {td_style}><b>강력 매도</b></td></tr>
-        <tr><td {td_style}>☔ 하락 추세<br>(에너지 약)</td>
-            <td {hl_score('macd', 'below', 'SUMMER')}>-1</td><td {hl_score('macd', 'below', 'AUTUMN')}>-1</td><td {hl_score('macd', 'below', 'WINTER')}>-1</td><td {hl_score('macd', 'below', 'SPRING')}>-1</td>
-            <td align="left" {td_style}>역풍</td></tr>
-    </table>
-    """
-    st.markdown(textwrap.dedent(html_score), unsafe_allow_html=True)
+        # RSI
+        f"<tr><td rowspan='4' {td_style}>RSI<br><span style='font-size:11px; color:#888; font-weight:normal'>지금 싼가? 비싼가?</span></td>",
+        f"<td {td_style}>과열 (>70)</td>",
+        f"<td {hl_score('rsi', 'over', 'SUMMER')}>-1</td><td {hl_score('rsi', 'over', 'AUTUMN')}>-3</td><td {hl_score('rsi', 'over', 'WINTER')}>-5</td><td {hl_score('rsi', 'over', 'SPRING')}>-2</td>",
+        f"<td align='left' {td_style}>가짜 반등</td></tr>",
+        
+        f"<tr><td {td_style}>중립 (45-65)</td>",
+        f"<td {hl_score('rsi', 'neutral', 'SUMMER')}>+1</td><td {hl_score('rsi', 'neutral', 'AUTUMN')}>0</td><td {hl_score('rsi', 'neutral', 'WINTER')}>-1</td><td {hl_score('rsi', 'neutral', 'SPRING')}>+1</td>",
+        f"<td align='left' {td_style}>-</td></tr>",
+        
+        f"<tr><td {td_style}>과매도 (<30)</td>",
+        f"<td {hl_score('rsi', 'under', 'SUMMER')}>+5</td><td {hl_score('rsi', 'under', 'AUTUMN')}>+4</td><td {hl_score('rsi', 'under', 'WINTER')}>0</td><td {hl_score('rsi', 'under', 'SPRING')}>+4</td>",
+        f"<td align='left' {td_style}>겨울 바닥 X</td></tr>",
+        
+        f"<tr><td {td_style}>🚀 탈출 (1~7일)</td>",
+        f"<td {hl_score('rsi', 'escape', 'SUMMER')}>3~5</td><td {hl_score('rsi', 'escape', 'AUTUMN')}>3~5</td><td {hl_score('rsi', 'escape', 'WINTER')}>3~5</td><td {hl_score('rsi', 'escape', 'SPRING')}>3~5</td>",
+        f"<td align='left' {td_style}><b>Best Timing</b></td></tr>",
+        
+        # VIX
+        f"<tr><td rowspan='4' {td_style}>VIX</td>",
+        f"<td {td_style}>안정 (<20)</td>",
+        f"<td {hl_score('vix', 'stable', 'SUMMER')}>+2</td><td {hl_score('vix', 'stable', 'AUTUMN')}>0</td><td {hl_score('vix', 'stable', 'WINTER')}>-2</td><td {hl_score('vix', 'stable', 'SPRING')}>+1</td>",
+        f"<td align='left' {td_style}>저변동성</td></tr>",
+        
+        f"<tr><td {td_style}>공포 (20-35)</td>",
+        f"<td {hl_score('vix', 'fear', 'SUMMER')}>-3</td><td {hl_score('vix', 'fear', 'AUTUMN')}>-4</td><td {hl_score('vix', 'fear', 'WINTER')}>+2</td><td {hl_score('vix', 'fear', 'SPRING')}>-1</td>",
+        f"<td align='left' {td_style}>기회 탐색</td></tr>",
+        
+        f"<tr><td {td_style}>패닉 상승</td>",
+        f"<td {hl_score('vix', 'panic_rise', 'SUMMER')}>-5</td><td {hl_score('vix', 'panic_rise', 'AUTUMN')}>-6</td><td {hl_score('vix', 'panic_rise', 'WINTER')}>-5</td><td {hl_score('vix', 'panic_rise', 'SPRING')}>-4</td>",
+        f"<td align='left' {td_style}>칼날</td></tr>",
+        
+        f"<tr><td {td_style}>📉 꺾임</td>",
+        f"<td {hl_score('vix', 'peak_out', 'SUMMER')}>-</td><td {hl_score('vix', 'peak_out', 'AUTUMN')}>-</td><td {hl_score('vix', 'peak_out', 'WINTER')}>+7</td><td {hl_score('vix', 'peak_out', 'SPRING')}>-</td>",
+        f"<td align='left' {td_style}><b>Sniper</b></td></tr>",
+        
+        # Bollinger
+        f"<tr><td rowspan='3' {td_style}>BB</td>",
+        f"<td {td_style}>밴드 내부</td>",
+        f"<td {hl_score('bb', 'in', 'SUMMER')}>0</td><td {hl_score('bb', 'in', 'AUTUMN')}>0</td><td {hl_score('bb', 'in', 'WINTER')}>0</td><td {hl_score('bb', 'in', 'SPRING')}>0</td>",
+        f"<td align='left' {td_style}>대기</td></tr>",
+        
+        f"<tr><td {td_style}>하단 이탈</td>",
+        f"<td {hl_score('bb', 'out', 'SUMMER')}>+3</td><td {hl_score('bb', 'out', 'AUTUMN')}>+2</td><td {hl_score('bb', 'out', 'WINTER')}>-2</td><td {hl_score('bb', 'out', 'SPRING')}>+1</td>",
+        f"<td align='left' {td_style}>가속화</td></tr>",
+        
+        f"<tr><td {td_style}>↩️ 복귀</td>",
+        f"<td {hl_score('bb', 'return', 'SUMMER')}>+4</td><td {hl_score('bb', 'return', 'AUTUMN')}>+3</td><td {hl_score('bb', 'return', 'WINTER')}>+5</td><td {hl_score('bb', 'return', 'SPRING')}>+4</td>",
+        f"<td align='left' {td_style}><b>Close In</b></td></tr>",
+        
+        # Trend
+        f"<tr><td {td_style}>추세 (20MA)<br><span style='font-size:11px; color:#888; font-weight:normal'>지금 당장의 추세모습</span></td><td {td_style}>20일선 위</td>",
+        f"<td {hl_score('trend', 'up', 'SUMMER')}>+2</td><td {hl_score('trend', 'up', 'AUTUMN')}>+2</td><td {hl_score('trend', 'up', 'WINTER')}>+3</td><td {hl_score('trend', 'up', 'SPRING')}>+3</td>",
+        f"<td align='left' {td_style}>회복</td></tr>",
+        
+        # Volume
+        f"<tr><td {td_style}>거래량</td><td {td_style}>폭증 (>150%)</td>",
+        f"<td {hl_score('vol', 'explode', 'SUMMER')}>+2</td><td {hl_score('vol', 'explode', 'AUTUMN')}>+3</td><td {hl_score('vol', 'explode', 'WINTER')}>+3</td><td {hl_score('vol', 'explode', 'SPRING')}>+2</td>",
+        f"<td align='left' {td_style}><b>손바뀜</b></td></tr>",
+        
+        f"<tr><td {td_style}>거래량</td><td {td_style}>일반</td>",
+        f"<td {hl_score('vol', 'normal', 'SUMMER')}>0</td><td {hl_score('vol', 'normal', 'AUTUMN')}>0</td><td {hl_score('vol', 'normal', 'WINTER')}>0</td><td {hl_score('vol', 'normal', 'SPRING')}>0</td>",
+        f"<td align='left' {td_style}>-</td></tr>",
+        
+        # MACD
+        f"<tr><td rowspan='4' {td_style}>MACD<br><span style='font-size:11px; color:#888; font-weight:normal'>상승장? 하락장?<br>(방향을 이끄는 힘)</span></td>",
+        f"<td {td_style}>📈 상승 전환<br>(골든크로스)</td>",
+        f"<td {hl_score('macd', 'break_up', 'SUMMER')}>+3</td><td {hl_score('macd', 'break_up', 'AUTUMN')}>+3</td><td {hl_score('macd', 'break_up', 'WINTER')}>+3</td><td {hl_score('macd', 'break_up', 'SPRING')}>+3</td>",
+        f"<td align='left' {td_style}><b>강력 매수</b></td></tr>",
+        
+        f"<tr><td {td_style}>☁️ 상승 추세<br>(에너지 강)</td>",
+        f"<td {hl_score('macd', 'above', 'SUMMER')}>+1</td><td {hl_score('macd', 'above', 'AUTUMN')}>+1</td><td {hl_score('macd', 'above', 'WINTER')}>+1</td><td {hl_score('macd', 'above', 'SPRING')}>+1</td>",
+        f"<td align='left' {td_style}>순풍</td></tr>",
+        
+        f"<tr><td {td_style}>📉 하락 전환<br>(데드크로스)</td>",
+        f"<td {hl_score('macd', 'break_down', 'SUMMER')}>-3</td><td {hl_score('macd', 'break_down', 'AUTUMN')}>-3</td><td {hl_score('macd', 'break_down', 'WINTER')}>-3</td><td {hl_score('macd', 'break_down', 'SPRING')}>-3</td>",
+        f"<td align='left' {td_style}><b>강력 매도</b></td></tr>",
+        
+        f"<tr><td {td_style}>☔ 하락 추세<br>(에너지 약)</td>",
+        f"<td {hl_score('macd', 'below', 'SUMMER')}>-1</td><td {hl_score('macd', 'below', 'AUTUMN')}>-1</td><td {hl_score('macd', 'below', 'WINTER')}>-1</td><td {hl_score('macd', 'below', 'SPRING')}>-1</td>",
+        f"<td align='left' {td_style}>역풍</td></tr>",
+        
+        "</table>"
+    ]
+    st.markdown("".join(html_score_list), unsafe_allow_html=True)
 
-    # 3. Final Verdict
+    # 3. Final Verdict (리스트 결합 방식)
     def get_matrix_style(current_id, row_id, bg_color):
+        # 스타일 리턴값도 HTML 속성은 작은따옴표(') 사용
         if current_id == row_id:
-            return f'style="background-color: {bg_color}; border: 3px solid #666; font-weight: bold; color: #333; height: 50px;"'
+            return f"style='background-color: {bg_color}; border: 3px solid #666; font-weight: bold; color: #333; height: 50px;'"
         else:
-            return 'style="background-color: white; border: 1px solid #eee; color: #999;"'
+            return "style='background-color: white; border: 1px solid #eee; color: #999;'"
 
-    html_verdict = f"""
-    <h3>3. Final Verdict: <span style="color:blue;">{score}점</span> - Dynamic Exit Matrix</h3>
-    <div style="border: 2px solid #ccc; border-radius: 10px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1);">
-        <table style="border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; text-align: center;">
-            <tr style="background-color: #333; color: white;">
-                <th {th_style} style="color:white;">점수 구간</th>
-                <th {th_style} style="color:white;">최종 판정</th>
-                <th {th_style} style="color:white;">🎯 익절 목표</th>
-                <th {th_style} style="color:white;">🛑 손절 라인</th>
-            </tr>
-            <tr {get_matrix_style(matrix_id, 'panic', '#ffebee')}>
-                <td>VIX 급등</td>
-                <td>⛔ 매매 중단 (Panic)</td>
-                <td>-</td>
-                <td>-</td>
-            </tr>
-            <tr {get_matrix_style(matrix_id, 'strong', '#dff0d8')}>
-                <td>12점 이상</td>
-                <td>💎 추세 추종 (Strong)</td>
-                <td style="color:green;">+75%</td>
-                <td style="color:red;">-300% (원금 3배)</td>
-            </tr>
-            <tr {get_matrix_style(matrix_id, 'standard', '#ffffff')}>
-                <td>8 ~ 11점</td>
-                <td>✅ 표준 대응 (Standard)</td>
-                <td style="color:green;">+50%</td>
-                <td style="color:red;">-200% (원금 3배)</td>
-            </tr>
-            <tr {get_matrix_style(matrix_id, 'weak', '#fff9c4')}>
-                <td>5 ~ 7점</td>
-                <td>⚠️ 속전 속결 (Hit & Run)</td>
-                <td style="color:green;">+30%</td>
-                <td style="color:red;">-150% (원금 2.5배)</td>
-            </tr>
-            <tr {get_matrix_style(matrix_id, 'no_entry', '#f2dede')}>
-                <td>5점 미만</td>
-                <td>🛡️ 진입 보류 (No Entry)</td>
-                <td>-</td>
-                <td>-</td>
-            </tr>
-        </table>
-        <div style="padding: 10px; background-color: #f9f9f9; text-align: center; color: #555; font-size: 13px;">
-            ※ <b>설정:</b> Delta -0.10 (Fixed) / DTE 45일 / Spread $5<br>
-            ※ 손절 라인은 프리미엄 가격 기준입니다. (예: $1.0 진입 시, 200% 손절은 $3.0 도달 시 청산)
-        </div>
-    </div>
-    """
-    st.markdown(textwrap.dedent(html_verdict), unsafe_allow_html=True)
+    html_verdict_list = [
+        f"<h3>3. Final Verdict: <span style='color:blue;'>{score}점</span> - Dynamic Exit Matrix</h3>",
+        "<div style='border: 2px solid #ccc; border-radius: 10px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1);'>",
+        "<table style='border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; text-align: center;'>",
+        f"<tr style='background-color: #333; color: white;'>",
+        f"<th {th_style} style='color:white;'>점수 구간</th>",
+        f"<th {th_style} style='color:white;'>최종 판정</th>",
+        f"<th {th_style} style='color:white;'>🎯 익절 목표</th>",
+        f"<th {th_style} style='color:white;'>🛑 손절 라인</th>",
+        "</tr>",
+        
+        f"<tr {get_matrix_style(matrix_id, 'panic', '#ffebee')}>",
+        "<td>VIX 급등</td><td>⛔ 매매 중단 (Panic)</td><td>-</td><td>-</td></tr>",
+        
+        f"<tr {get_matrix_style(matrix_id, 'strong', '#dff0d8')}>",
+        "<td>12점 이상</td><td>💎 추세 추종 (Strong)</td><td style='color:green;'>+75%</td><td style='color:red;'>-300% (원금 3배)</td></tr>",
+        
+        f"<tr {get_matrix_style(matrix_id, 'standard', '#ffffff')}>",
+        "<td>8 ~ 11점</td><td>✅ 표준 대응 (Standard)</td><td style='color:green;'>+50%</td><td style='color:red;'>-200% (원금 3배)</td></tr>",
+        
+        f"<tr {get_matrix_style(matrix_id, 'weak', '#fff9c4')}>",
+        "<td>5 ~ 7점</td><td>⚠️ 속전 속결 (Hit & Run)</td><td style='color:green;'>+30%</td><td style='color:red;'>-150% (원금 2.5배)</td></tr>",
+        
+        f"<tr {get_matrix_style(matrix_id, 'no_entry', '#f2dede')}>",
+        "<td>5점 미만</td><td>🛡️ 진입 보류 (No Entry)</td><td>-</td><td>-</td></tr>",
+        
+        "</table>",
+        "<div style='padding: 10px; background-color: #f9f9f9; text-align: center; color: #555; font-size: 13px;'>",
+        "※ <b>설정:</b> Delta -0.10 (Fixed) / DTE 45일 / Spread $5<br>",
+        "※ 손절 라인은 프리미엄 가격 기준입니다. (예: $1.0 진입 시, 200% 손절은 $3.0 도달 시 청산)",
+        "</div></div>"
+    ]
+    st.markdown("".join(html_verdict_list), unsafe_allow_html=True)
 
+    # 4. Manual / Warning (리스트 결합)
     if strategy and matrix_id != 'no_entry' and matrix_id != 'panic':
-        html_manual = f"""
-        <div style="border: 2px solid #2196F3; padding: 15px; margin-top: 20px; border-radius: 10px; background-color: #ffffff; color: black;">
-            <h3 style="color: #2196F3; margin-top: 0;">👮‍♂️ 주문 상세 매뉴얼</h3>
-            <ul style="line-height: 1.6; list-style-type: none; padding-left: 0; color: black;">
-                <li>✅ <b>종목:</b> QQQ (Put Credit Spread)</li>
-                <li>✅ <b>만기:</b> {strategy['expiry']} (DTE {strategy['dte']}일)</li>
-                <li>✅ <b>Strike:</b> Short <b style="color:red">${strategy['short']}</b> / Long <b style="color:green">${strategy['long']}</b> (Width ${strategy['width']})</li>
-                <li>✅ <b>Delta:</b> {strategy['delta']:.3f} (Target: {target_delta})</li>
-            </ul>
-            <hr>
-            <h4 style="margin-bottom: 5px; color: black;">🛑 적용된 청산 원칙</h4>
-            <ul style="line-height: 1.6; color: black;">
-                <li><b>익절 (Take Profit):</b> 진입 프리미엄의 <b>{profit_target}</b> 이익 시 청산</li>
-                <li style="color: red; font-weight: bold;">손절 (Stop Loss): 진입 프리미엄의 {stop_loss} 도달 시 즉시 청산</li>
-                <li><b>주의:</b> 90% 비중 투자 시, 반드시 진입과 동시에 <u>감시 주문(Stop Limit)</u>을 설정하세요.</li>
-            </ul>
-        </div>
-        """
+        html_manual_list = [
+            "<div style='border: 2px solid #2196F3; padding: 15px; margin-top: 20px; border-radius: 10px; background-color: #ffffff; color: black;'>",
+            "<h3 style='color: #2196F3; margin-top: 0;'>👮‍♂️ 주문 상세 매뉴얼</h3>",
+            "<ul style='line-height: 1.6; list-style-type: none; padding-left: 0; color: black;'>",
+            f"<li>✅ <b>종목:</b> QQQ (Put Credit Spread)</li>",
+            f"<li>✅ <b>만기:</b> {strategy['expiry']} (DTE {strategy['dte']}일)</li>",
+            f"<li>✅ <b>Strike:</b> Short <b style='color:red'>${strategy['short']}</b> / Long <b style='color:green'>${strategy['long']}</b> (Width ${strategy['width']})</li>",
+            f"<li>✅ <b>Delta:</b> {strategy['delta']:.3f} (Target: {target_delta})</li>",
+            "</ul><hr>",
+            "<h4 style='margin-bottom: 5px; color: black;'>🛑 적용된 청산 원칙</h4>",
+            "<ul style='line-height: 1.6; color: black;'>",
+            f"<li><b>익절 (Take Profit):</b> 진입 프리미엄의 <b>{profit_target}</b> 이익 시 청산</li>",
+            f"<li style='color: red; font-weight: bold;'>손절 (Stop Loss): 진입 프리미엄의 {stop_loss} 도달 시 즉시 청산</li>",
+            "<li><b>주의:</b> 90% 비중 투자 시, 반드시 진입과 동시에 <u>감시 주문(Stop Limit)</u>을 설정하세요.</li>",
+            "</ul></div>"
+        ]
+        st.markdown("".join(html_manual_list), unsafe_allow_html=True)
     else:
-        html_manual = """
-        <div style="border: 2px solid red; padding: 15px; margin-top: 20px; border-radius: 10px; background-color: #ffebee;">
-            <h3 style="color: red; margin-top: 0;">⛔ 진입 금지 (No Entry)</h3>
-            <p style="color: black;">현재 점수 또는 시장 상황(VIX)이 신규 진입에 적합하지 않습니다.<br>
-            기존 포지션 관리(청산/롤오버)에만 집중하십시오.</p>
-        </div>
-        """
-    st.markdown(textwrap.dedent(html_manual), unsafe_allow_html=True)
+        html_warning_list = [
+            "<div style='border: 2px solid red; padding: 15px; margin-top: 20px; border-radius: 10px; background-color: #ffebee;'>",
+            "<h3 style='color: red; margin-top: 0;'>⛔ 진입 금지 (No Entry)</h3>",
+            "<p style='color: black;'>현재 점수 또는 시장 상황(VIX)이 신규 진입에 적합하지 않습니다.<br>",
+            "기존 포지션 관리(청산/롤오버)에만 집중하십시오.</p></div>"
+        ]
+        st.markdown("".join(html_warning_list), unsafe_allow_html=True)
 
     st.markdown("---")
     st.subheader("📈 기술적 분석 차트")
