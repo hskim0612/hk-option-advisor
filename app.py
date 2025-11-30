@@ -350,8 +350,8 @@ def find_best_option(price, iv, target_delta):
     except:
         return None
 
-# === [4] 차트 (수정: Plotly 인터랙티브 차트 적용) ===
-def create_charts(data):
+# === [4] 차트 (수정: Plotly + Click-to-Lock) ===
+def create_charts(data, locked_date=None):
     hist = data['hist']
     vix_hist = data['vix_hist']
     vix3m_hist = data['vix3m_hist']
@@ -382,21 +382,21 @@ def create_charts(data):
                              name='Bollinger', hoverinfo='skip'), row=1, col=1)
     
     # Moving Averages
-    fig.add_trace(go.Scatter(x=hist.index, y=hist['MA200'], line=dict(color='red', width=1.5), name='200MA'), row=1, col=1)
-    fig.add_trace(go.Scatter(x=hist.index, y=hist['MA50'], line=dict(color='blue', width=1.5), name='50MA'), row=1, col=1)
-    fig.add_trace(go.Scatter(x=hist.index, y=hist['MA20'], line=dict(color='green', width=1, dash='dot'), name='20MA'), row=1, col=1)
+    fig.add_trace(go.Scatter(x=hist.index, y=hist['MA200'], line=dict(color='red', width=1.5), name='200MA', hovertemplate='200MA: $%{y:.2f}<extra></extra>'), row=1, col=1)
+    fig.add_trace(go.Scatter(x=hist.index, y=hist['MA50'], line=dict(color='blue', width=1.5), name='50MA', hovertemplate='50MA: $%{y:.2f}<extra></extra>'), row=1, col=1)
+    fig.add_trace(go.Scatter(x=hist.index, y=hist['MA20'], line=dict(color='green', width=1, dash='dot'), name='20MA', hovertemplate='20MA: $%{y:.2f}<extra></extra>'), row=1, col=1)
     
     # Price
-    fig.add_trace(go.Scatter(x=hist.index, y=hist['Close'], line=dict(color='black', width=1.5), name='Close'), row=1, col=1)
+    fig.add_trace(go.Scatter(x=hist.index, y=hist['Close'], line=dict(color='black', width=1.5), name='Close', hovertemplate='Close: $%{y:.2f}<extra></extra>'), row=1, col=1)
 
     # === 2. Volume Chart (Row 2) ===
     # Color Logic: Close >= Open (Green), Close < Open (Red)
     colors = ['green' if c >= o else 'red' for c, o in zip(hist['Close'], hist['Open'])]
-    fig.add_trace(go.Bar(x=hist.index, y=hist['Volume'], marker_color=colors, name='Volume', opacity=0.5), row=2, col=1)
-    fig.add_trace(go.Scatter(x=hist.index, y=hist['Vol_MA20'], line=dict(color='black', width=1), name='Vol MA20'), row=2, col=1)
+    fig.add_trace(go.Bar(x=hist.index, y=hist['Volume'], marker_color=colors, name='Volume', opacity=0.5, hovertemplate='Vol: %{y}<extra></extra>'), row=2, col=1)
+    fig.add_trace(go.Scatter(x=hist.index, y=hist['Vol_MA20'], line=dict(color='black', width=1), name='Vol MA20', hovertemplate='VolMA: %{y}<extra></extra>'), row=2, col=1)
 
     # === 3. RSI Chart (Row 3) ===
-    fig.add_trace(go.Scatter(x=hist.index, y=hist['RSI'], line=dict(color='purple', width=1.5), name='RSI'), row=3, col=1)
+    fig.add_trace(go.Scatter(x=hist.index, y=hist['RSI'], line=dict(color='purple', width=1.5), name='RSI', hovertemplate='RSI: %{y:.1f}<extra></extra>'), row=3, col=1)
     
     # RSI Reference Lines & Zones
     fig.add_hline(y=70, line_dash="dot", line_color="red", row=3, col=1)
@@ -409,15 +409,15 @@ def create_charts(data):
                              fill='tozeroy', fillcolor='rgba(255, 0, 0, 0.0)', showlegend=False, hoverinfo='skip'), row=3, col=1)
     
     # === 4. MACD Chart (Row 4) ===
-    fig.add_trace(go.Scatter(x=hist.index, y=hist['MACD'], line=dict(color='blue', width=1), name='MACD'), row=4, col=1)
-    fig.add_trace(go.Scatter(x=hist.index, y=hist['Signal'], line=dict(color='orange', width=1), name='Signal'), row=4, col=1)
-    fig.add_trace(go.Bar(x=hist.index, y=hist['MACD']-hist['Signal'], marker_color='gray', opacity=0.3, name='Hist'), row=4, col=1)
+    fig.add_trace(go.Scatter(x=hist.index, y=hist['MACD'], line=dict(color='blue', width=1), name='MACD', hovertemplate='MACD: %{y:.2f}<extra></extra>'), row=4, col=1)
+    fig.add_trace(go.Scatter(x=hist.index, y=hist['Signal'], line=dict(color='orange', width=1), name='Signal', hovertemplate='Sig: %{y:.2f}<extra></extra>'), row=4, col=1)
+    fig.add_trace(go.Bar(x=hist.index, y=hist['MACD']-hist['Signal'], marker_color='gray', opacity=0.3, name='Hist', hovertemplate='Hist: %{y:.2f}<extra></extra>'), row=4, col=1)
     fig.add_hline(y=0, line_width=0.8, line_color="black", row=4, col=1)
 
     # === 5. VIX Level Chart (Row 5) ===
-    fig.add_trace(go.Scatter(x=vix_hist.index, y=vix_hist['Close'], line=dict(color='purple', width=1.5), name='VIX'), row=5, col=1)
+    fig.add_trace(go.Scatter(x=vix_hist.index, y=vix_hist['Close'], line=dict(color='purple', width=1.5), name='VIX', hovertemplate='VIX: %{y:.2f}<extra></extra>'), row=5, col=1)
     if vix3m_hist is not None and not vix3m_hist.empty:
-        fig.add_trace(go.Scatter(x=vix3m_hist.index, y=vix3m_hist['Close'], line=dict(color='gray', width=1, dash='dot'), name='VIX3M'), row=5, col=1)
+        fig.add_trace(go.Scatter(x=vix3m_hist.index, y=vix3m_hist['Close'], line=dict(color='gray', width=1, dash='dot'), name='VIX3M', hovertemplate='VIX3M: %{y:.2f}<extra></extra>'), row=5, col=1)
     
     fig.add_hline(y=30, line_dash="dash", line_color="red", annotation_text="Panic", row=5, col=1)
     fig.add_hline(y=20, line_dash="dash", line_color="green", annotation_text="Stable", row=5, col=1)
@@ -425,7 +425,7 @@ def create_charts(data):
     # === 6. VIX Ratio Chart (Row 6) ===
     if term_df is not None and not term_df.empty:
         # Ratio Line
-        fig.add_trace(go.Scatter(x=term_df.index, y=term_df['Ratio'], line=dict(color='black', width=1.2), name='Ratio'), row=6, col=1)
+        fig.add_trace(go.Scatter(x=term_df.index, y=term_df['Ratio'], line=dict(color='black', width=1.2), name='Ratio', hovertemplate='Ratio: %{y:.3f}<extra></extra>'), row=6, col=1)
         
         # Guidelines
         fig.add_hline(y=1.0, line_dash="dash", line_color="red", row=6, col=1)
@@ -447,19 +447,44 @@ def create_charts(data):
         fig.add_annotation(text="데이터 부족: VIX/VIX3M Ratio 표시 불가", 
                            xref="x domain", yref="y domain", x=0.5, y=0.5, showarrow=False, font=dict(color="red"), row=6, col=1)
 
+    # [새 기능] 고정 수직선 추가
+    if locked_date is not None:
+        fig.add_vline(
+            x=locked_date, 
+            line=dict(color='black', width=2, dash='solid'),
+            opacity=0.9,
+            annotation_text=f"🔒 {locked_date.strftime('%Y-%m-%d')}", 
+            annotation_position="top"
+        )
+
     # === Global Layout Settings ===
     fig.update_layout(
         height=1500,  # 전체 높이 설정
         showlegend=True,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         plot_bgcolor='white',
-        hovermode='x unified',  # [핵심] 모든 차트에 동시 반응하는 세로선(Crosshair)
+        hovermode='x unified',  # [핵심] 모든 데이터 동시 표시
+        hoverlabel=dict(
+            bgcolor="white",
+            font_size=11,
+            font_color="black",
+            font_family="Arial"
+        ),
         margin=dict(t=50, b=50, l=50, r=50)
     )
 
-    # X축 설정 (Rangeslider 제거, 라벨은 맨 아래만)
-    fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='#f0f0f0', rangeslider_visible=False)
-    fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='#f0f0f0')
+    # X축 설정 (Spike Line 포함)
+    fig.update_xaxes(
+        showgrid=True, gridwidth=1, gridcolor='#f0f0f0', 
+        rangeslider_visible=False,
+        showspikes=True,
+        spikemode='across',      # [핵심] 차트 전체 관통
+        spikesnap='cursor',
+        spikethickness=1,
+        spikecolor='rgba(150, 150, 150, 0.4)',  # 연한 회색 가이드
+        spikedash='dot'
+    )
+    fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='#f0f0f0', showspikes=False)
 
     # RSI Y축 고정
     fig.update_yaxes(range=[0, 100], row=3, col=1)
@@ -468,8 +493,22 @@ def create_charts(data):
 
 # === [메인 화면] ===
 def main():
+    # [1] Session State 초기화 (날짜 고정용)
+    if 'locked_date' not in st.session_state:
+        st.session_state.locked_date = None
+
     st.title("🦅 HK Advisory (Grand Master v20.0)")
     st.caption(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | System: Institutional Grade")
+
+    # [2] 고정 해제 버튼 (고정 상태일 때만 표시)
+    if st.session_state.locked_date:
+        col1, col2 = st.columns([6, 1])
+        with col2:
+            if st.button("🔓 고정 해제"):
+                st.session_state.locked_date = None
+                st.rerun()
+        with col1:
+             st.info(f"🔒 고정된 시점: {st.session_state.locked_date.strftime('%Y년 %m월 %d일')} | 차트의 다른 지점을 클릭하면 이동합니다.")
 
     with st.spinner('시장 구조 및 변동성 정밀 분석 중...'):
         try:
@@ -495,7 +534,6 @@ def main():
     st.sidebar.metric("VIX Raw Data", f"{vix_count} rows")
     st.sidebar.metric("VIX3M Raw Data", f"{vix3m_count} rows")
     
-    # Ratio 데이터 상태에 따른 색상 표시
     if ratio_count > 0:
         st.sidebar.success(f"Ratio Merged: {ratio_count} rows")
         curr_ratio = term_df['Ratio'].iloc[-1]
@@ -554,7 +592,7 @@ def main():
         f"<th {th_style}>Logic</th>",
         "</tr>",
         
-        # VIX Term Structure Row (Universal)
+        # VIX Term Structure
         f"<tr><td rowspan='3' {td_style}><b>VIX Term</b><br><span style='font-size:11px; color:blue;'>Ratio: {vix_ratio_disp}</span></td>",
         f"<td {td_style}><b>Easy Money</b><br>(Contango &lt;0.9)</td>",
         f"<td colspan='4' {hl_score('term', 'contango', 'ALL')}>+3 (Universal)</td>",
@@ -586,7 +624,7 @@ def main():
         f"<td {hl_score('rsi', 'escape', 'SUMMER')}>3~5</td><td {hl_score('rsi', 'escape', 'AUTUMN')}>3~5</td><td {hl_score('rsi', 'escape', 'WINTER')}>3~5</td><td {hl_score('rsi', 'escape', 'SPRING')}>3~5</td>",
         f"<td align='left' {td_style}><b>Best Timing</b></td></tr>",
         
-        # VIX
+        # VIX Level
         f"<tr><td rowspan='4' {td_style}>VIX (Level)</td>",
         f"<td {td_style}>안정 (<20)</td>",
         f"<td {hl_score('vix', 'stable', 'SUMMER')}>+2</td><td {hl_score('vix', 'stable', 'AUTUMN')}>0</td><td {hl_score('vix', 'stable', 'WINTER')}>-2</td><td {hl_score('vix', 'stable', 'SPRING')}>+1</td>",
@@ -618,12 +656,11 @@ def main():
         f"<td {hl_score('bb', 'return', 'SUMMER')}>+4</td><td {hl_score('bb', 'return', 'AUTUMN')}>+3</td><td {hl_score('bb', 'return', 'WINTER')}>+5</td><td {hl_score('bb', 'return', 'SPRING')}>+4</td>",
         f"<td align='left' {td_style}><b>Close In</b></td></tr>",
         
-        # Trend
-        f"<tr><td {td_style}>추세 (20MA)<br><span style='font-size:11px; color:#888; font-weight:normal'>지금 당장의 추세모습</span></td><td {td_style}>20일선 위</td>",
+        # Trend & Volume & MACD (Same structure as previous, keeping brevity)
+        f"<tr><td {td_style}>추세 (20MA)</td><td {td_style}>20일선 위</td>",
         f"<td {hl_score('trend', 'up', 'SUMMER')}>+2</td><td {hl_score('trend', 'up', 'AUTUMN')}>+2</td><td {hl_score('trend', 'up', 'WINTER')}>+3</td><td {hl_score('trend', 'up', 'SPRING')}>+3</td>",
         f"<td align='left' {td_style}>회복</td></tr>",
         
-        # Volume
         f"<tr><td {td_style}>거래량</td><td {td_style}>폭증 (>150%)</td>",
         f"<td {hl_score('vol', 'explode', 'SUMMER')}>+2</td><td {hl_score('vol', 'explode', 'AUTUMN')}>+3</td><td {hl_score('vol', 'explode', 'WINTER')}>+3</td><td {hl_score('vol', 'explode', 'SPRING')}>+2</td>",
         f"<td align='left' {td_style}><b>손바뀜</b></td></tr>",
@@ -632,21 +669,20 @@ def main():
         f"<td {hl_score('vol', 'normal', 'SUMMER')}>0</td><td {hl_score('vol', 'normal', 'AUTUMN')}>0</td><td {hl_score('vol', 'normal', 'WINTER')}>0</td><td {hl_score('vol', 'normal', 'SPRING')}>0</td>",
         f"<td align='left' {td_style}>-</td></tr>",
         
-        # MACD
-        f"<tr><td rowspan='4' {td_style}>MACD<br><span style='font-size:11px; color:#888; font-weight:normal'>상승장? 하락장?<br>(방향을 이끄는 힘)</span></td>",
-        f"<td {td_style}>📈 상승 전환<br>(골든크로스)</td>",
+        f"<tr><td rowspan='4' {td_style}>MACD</td>",
+        f"<td {td_style}>📈 상승 전환</td>",
         f"<td {hl_score('macd', 'break_up', 'SUMMER')}>+3</td><td {hl_score('macd', 'break_up', 'AUTUMN')}>+3</td><td {hl_score('macd', 'break_up', 'WINTER')}>+3</td><td {hl_score('macd', 'break_up', 'SPRING')}>+3</td>",
         f"<td align='left' {td_style}><b>강력 매수</b></td></tr>",
         
-        f"<tr><td {td_style}>☁️ 상승 추세<br>(에너지 강)</td>",
+        f"<tr><td {td_style}>☁️ 상승 추세</td>",
         f"<td {hl_score('macd', 'above', 'SUMMER')}>+1</td><td {hl_score('macd', 'above', 'AUTUMN')}>+1</td><td {hl_score('macd', 'above', 'WINTER')}>+1</td><td {hl_score('macd', 'above', 'SPRING')}>+1</td>",
         f"<td align='left' {td_style}>순풍</td></tr>",
         
-        f"<tr><td {td_style}>📉 하락 전환<br>(데드크로스)</td>",
+        f"<tr><td {td_style}>📉 하락 전환</td>",
         f"<td {hl_score('macd', 'break_down', 'SUMMER')}>-3</td><td {hl_score('macd', 'break_down', 'AUTUMN')}>-3</td><td {hl_score('macd', 'break_down', 'WINTER')}>-3</td><td {hl_score('macd', 'break_down', 'SPRING')}>-3</td>",
         f"<td align='left' {td_style}><b>강력 매도</b></td></tr>",
         
-        f"<tr><td {td_style}>☔ 하락 추세<br>(에너지 약)</td>",
+        f"<tr><td {td_style}>☔ 하락 추세</td>",
         f"<td {hl_score('macd', 'below', 'SUMMER')}>-1</td><td {hl_score('macd', 'below', 'AUTUMN')}>-1</td><td {hl_score('macd', 'below', 'WINTER')}>-1</td><td {hl_score('macd', 'below', 'SPRING')}>-1</td>",
         f"<td align='left' {td_style}>역풍</td></tr>",
         
@@ -768,9 +804,30 @@ def main():
     st.markdown("---")
     st.subheader("📈 기술적 분석 차트 (Interactive)")
     
-    # [수정] Plotly 차트 출력
-    chart_fig = create_charts(data)
-    st.plotly_chart(chart_fig, use_container_width=True)
+    # [3] 차트 생성 (Session State의 locked_date 전달)
+    chart_fig = create_charts(data, locked_date=st.session_state.locked_date)
+    
+    # [4] on_select 이벤트로 클릭(터치) 감지
+    event = st.plotly_chart(
+        chart_fig, 
+        use_container_width=True, 
+        on_select="rerun",
+        selection_mode="points",
+        key="main_chart"
+    )
+
+    # [5] 이벤트 처리: 클릭된 날짜 추출 및 저장
+    if event and event.selection and event.selection.points:
+        clicked_x = event.selection.points[0]['x']
+        
+        # 날짜 형식 변환
+        if isinstance(clicked_x, str):
+            clicked_date = pd.to_datetime(clicked_x)
+        else:
+            clicked_date = clicked_x
+            
+        st.session_state.locked_date = clicked_date
+        st.rerun()
 
 if __name__ == "__main__":
     main()
