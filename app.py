@@ -43,13 +43,14 @@ def check_password():
 if not check_password():
     st.stop()
 
-# === [1] 데이터 수집 (수정: Ratio 히스토리 계산 로직 추가) ===
+# === [1] 데이터 수집 (수정: 인덱스 정규화 및 안전 병합) ===
 @st.cache_data(ttl=1800)
 def get_market_data():
+    # 1. QQQ 데이터
     qqq = yf.Ticker("QQQ")
     hist = qqq.history(period="2y")
     
-    # 이동평균선
+    # 이동평균선 및 보조지표
     hist['MA20'] = hist['Close'].rolling(window=20).mean()
     hist['MA50'] = hist['Close'].rolling(window=50).mean()
     hist['MA200'] = hist['Close'].rolling(window=200).mean()
@@ -75,14 +76,13 @@ def get_market_data():
     
     hist['Vol_MA20'] = hist['Volume'].rolling(window=20).mean()
     
-    # VIX 데이터
+    # 2. VIX & VIX3M 데이터 처리 (핵심 수정 구간)
     vix_ticker = yf.Ticker("^VIX")
     vix_hist = vix_ticker.history(period="1y")
     
-    # VIX3M 데이터 및 Ratio 계산
     vix3m_val = None
     vix3m_hist = None
-    vix_term_df = pd.DataFrame() # Ratio 저장을 위한 DF
+    vix_term_df = None  # 초기화
 
     try:
         vix3m_ticker = yf.Ticker("^VIX3M")
@@ -91,17 +91,39 @@ def get_market_data():
         if not vix3m_hist.empty and not vix_hist.empty:
             vix3m_val = vix3m_hist['Close'].iloc[-1]
             
-            # [NEW] 데이터 병합 및 Ratio 계산
-            # 인덱스(날짜)를 기준으로 Inner Join하여 날짜를 맞춤
-            df_vix = vix_hist[['Close']].rename(columns={'Close': 'VIX'})
-            df_vix3m = vix3m_hist[['Close']].rename(columns={'Close': 'VIX3M'})
+            # [CRITICAL FIX] Timezone 제거 및 날짜 정규화
+            # df.copy()를 사용하여 원본 보존
+            df_vix = vix_hist[['Close']].copy()
+            df_vix3m = vix3m_hist[['Close']].copy()
             
-            vix_term_df = pd.concat([df_vix, df_vix3m], axis=1, join='inner')
-            vix_term_df['Ratio'] = vix_term_df['VIX'] / vix_term_df['VIX3M']
+            # Timezone 정보를 날리고(naive), 시간(00:00:00)으로 정규화
+            df_vix.index = df_vix.index.tz_localize(None).normalize()
+            df_vix3m.index = df_vix3m.index.tz_localize(None).normalize()
             
+            # pd.merge 사용 (Inner Join)
+            merged_df = pd.merge(
+                df_vix, 
+                df_vix3m, 
+                left_index=True, 
+                right_index=True, 
+                suffixes=('_VIX', '_VIX3M')
+            )
+            
+            # 데이터 개수 검증 (30일 이상일 때만 유효)
+            if len(merged_df) >= 30:
+                merged_df['Ratio'] = merged_df['Close_VIX'] / merged_df['Close_VIX3M']
+                vix_term_df = merged_df
+            else:
+                # 데이터가 너무 적음
+                vix_term_df = None
+
     except Exception as e:
+        # 에러 발생 시 None 유지 (앱 중단 방지)
         vix3m_val = None
+        vix_term_df = None
+        print(f"Error fetching VIX3M: {e}")
     
+    # 현재 상태값
     curr = hist.iloc[-1]
     prev = hist.iloc[-2]
     curr_vix = vix_hist['Close'].iloc[-1]
@@ -129,7 +151,7 @@ def get_market_data():
         'vix3m': vix3m_val,
         'iv': current_iv,
         'hist': hist, 'vix_hist': vix_hist, 'vix3m_hist': vix3m_hist,
-        'vix_term_df': vix_term_df # [NEW] 계산된 Ratio DF 전달
+        'vix_term_df': vix_term_df
     }
 
 # === [2] 전문가 로직 ===
@@ -142,7 +164,7 @@ def analyze_expert_logic(d):
     score = 0
     log = {}
     
-    # 1. VIX Term Structure Logic (Universal)
+    # 1. VIX Term Structure Logic
     vix_ratio = 1.0
     if d['vix3m'] and d['vix3m'] > 0:
         vix_ratio = d['vix'] / d['vix3m']
@@ -337,11 +359,9 @@ def find_best_option(price, iv, target_delta):
     except:
         return None
 
-# === [4] 차트 (수정: Ratio 서브플롯 추가 및 시각화) ===
+# === [4] 차트 (수정: 에러 핸들링 및 시각화 개선) ===
 def create_charts(data):
     hist = data['hist']
-    # GridSpec Height 비율 조정 (서브플롯 하나 추가됨)
-    # Price(2), Vol(0.6), RSI(1), MACD(1), VIX(1), [NEW] Ratio(1)
     fig = plt.figure(figsize=(10, 18))
     gs = fig.add_gridspec(6, 1, height_ratios=[2, 0.6, 1, 1, 1, 1])
     
@@ -402,7 +422,7 @@ def create_charts(data):
     ax3.grid(True, alpha=0.3)
     plt.setp(ax3.get_xticklabels(), visible=False)
 
-    # 6. [NEW] VIX Term Structure Ratio
+    # 6. [NEW] VIX Term Structure Ratio (수정)
     ax4 = fig.add_subplot(gs[5], sharex=ax1)
     term_data = data.get('vix_term_df')
     
@@ -410,22 +430,28 @@ def create_charts(data):
         # Ratio Line
         ax4.plot(term_data.index, term_data['Ratio'], color='black', lw=1.2, label='Ratio (VIX/VIX3M)')
         
-        # Guidelines (1.0 Backwardation, 0.9 Contango)
+        # Guidelines
         ax4.axhline(1.0, color='red', ls='--', alpha=0.8, lw=1)
         ax4.axhline(0.9, color='green', ls='--', alpha=0.8, lw=1)
         
-        # Fill Areas
-        # Danger Zone (> 1.0)
+        # Fill Areas (Explicitly handling index)
+        # Danger Zone
         ax4.fill_between(term_data.index, term_data['Ratio'], 1.0, 
                          where=(term_data['Ratio'] > 1.0), 
-                         color='red', alpha=0.2, label='Backwardation (Danger)')
-        # Opportunity Zone (< 0.9)
+                         color='red', alpha=0.2, label='Backwardation')
+        # Opportunity Zone
         ax4.fill_between(term_data.index, term_data['Ratio'], 0.9, 
                          where=(term_data['Ratio'] < 0.9), 
-                         color='green', alpha=0.2, label='Contango (Safe)')
+                         color='green', alpha=0.2, label='Contango')
+        
+        ax4.legend(loc='upper right')
+    else:
+        # 데이터 부족 시 메시지 표시
+        ax4.text(0.5, 0.5, "데이터 부족: Ratio 그래프를 그릴 수 없습니다.\n(VIX/VIX3M 병합 실패)", 
+                 horizontalalignment='center', verticalalignment='center', 
+                 transform=ax4.transAxes, fontsize=12, color='red')
         
     ax4.set_title('Structure of Volatility (Ratio = VIX / VIX3M)', fontsize=12, fontweight='bold')
-    ax4.legend(loc='upper right')
     ax4.grid(True, alpha=0.3)
     
     plt.tight_layout()
@@ -445,6 +471,29 @@ def main():
         except Exception as e:
             st.error(f"오류 발생: {e}")
             return
+
+    # [NEW] Sidebar Debugging Panel (수정)
+    st.sidebar.title("🛠️ 시스템 상태")
+    st.sidebar.markdown("---")
+    
+    # 1. 데이터 카운트
+    vix_count = len(data['vix_hist']) if not data['vix_hist'].empty else 0
+    vix3m_count = len(data['vix3m_hist']) if data['vix3m_hist'] is not None and not data['vix3m_hist'].empty else 0
+    
+    term_df = data.get('vix_term_df')
+    ratio_count = len(term_df) if term_df is not None else 0
+    
+    st.sidebar.metric("VIX Raw Data", f"{vix_count} rows")
+    st.sidebar.metric("VIX3M Raw Data", f"{vix3m_count} rows")
+    
+    # Ratio 데이터 상태에 따른 색상 표시
+    if ratio_count > 0:
+        st.sidebar.success(f"Ratio Merged: {ratio_count} rows")
+        curr_ratio = term_df['Ratio'].iloc[-1]
+        st.sidebar.metric("Current Ratio", f"{curr_ratio:.4f}")
+    else:
+        st.sidebar.error("Ratio Merged: 0 rows (Error)")
+        st.sidebar.warning("체크 포인트: 날짜 형식 불일치 또는 데이터 부족")
 
     # 스타일 헬퍼
     def hl_score(category, row_state, col_season):
@@ -468,7 +517,6 @@ def main():
     td_style = "style='border: 1px solid #ddd; padding: 8px; color: black; background-color: white;'"
     th_style = "style='border: 1px solid #ddd; padding: 8px; color: black; background-color: #f2f2f2;'"
     
-    # Term Structure Color Logic
     vix_ratio_disp = f"{log.get('vix_ratio', 0):.2f}"
 
     # 1. Season Matrix
