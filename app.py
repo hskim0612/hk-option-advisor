@@ -43,7 +43,7 @@ def check_password():
 if not check_password():
     st.stop()
 
-# === [1] 데이터 수집 (업그레이드: VIX3M 추가) ===
+# === [1] 데이터 수집 (수정: Ratio 히스토리 계산 로직 추가) ===
 @st.cache_data(ttl=1800)
 def get_market_data():
     qqq = yf.Ticker("QQQ")
@@ -79,16 +79,28 @@ def get_market_data():
     vix_ticker = yf.Ticker("^VIX")
     vix_hist = vix_ticker.history(period="1y")
     
-    # [NEW] VIX3M 데이터 (예외처리 포함)
+    # VIX3M 데이터 및 Ratio 계산
     vix3m_val = None
     vix3m_hist = None
+    vix_term_df = pd.DataFrame() # Ratio 저장을 위한 DF
+
     try:
         vix3m_ticker = yf.Ticker("^VIX3M")
         vix3m_hist = vix3m_ticker.history(period="1y")
-        if not vix3m_hist.empty:
+        
+        if not vix3m_hist.empty and not vix_hist.empty:
             vix3m_val = vix3m_hist['Close'].iloc[-1]
+            
+            # [NEW] 데이터 병합 및 Ratio 계산
+            # 인덱스(날짜)를 기준으로 Inner Join하여 날짜를 맞춤
+            df_vix = vix_hist[['Close']].rename(columns={'Close': 'VIX'})
+            df_vix3m = vix3m_hist[['Close']].rename(columns={'Close': 'VIX3M'})
+            
+            vix_term_df = pd.concat([df_vix, df_vix3m], axis=1, join='inner')
+            vix_term_df['Ratio'] = vix_term_df['VIX'] / vix_term_df['VIX3M']
+            
     except Exception as e:
-        vix3m_val = None  # 데이터 로드 실패 시 None 처리
+        vix3m_val = None
     
     curr = hist.iloc[-1]
     prev = hist.iloc[-2]
@@ -114,12 +126,13 @@ def get_market_data():
         'macd_prev': prev['MACD'], 'signal_prev': prev['Signal'],
         'volume': curr['Volume'], 'vol_ma20': curr['Vol_MA20'], 'vol_pct': vol_pct,
         'vix': curr_vix, 'vix_prev': prev_vix,
-        'vix3m': vix3m_val, # [NEW]
+        'vix3m': vix3m_val,
         'iv': current_iv,
-        'hist': hist, 'vix_hist': vix_hist, 'vix3m_hist': vix3m_hist
+        'hist': hist, 'vix_hist': vix_hist, 'vix3m_hist': vix3m_hist,
+        'vix_term_df': vix_term_df # [NEW] 계산된 Ratio DF 전달
     }
 
-# === [2] 전문가 로직 (업그레이드: VIX Term Structure 반영) ===
+# === [2] 전문가 로직 ===
 def analyze_expert_logic(d):
     if d['price'] > d['ma50'] and d['price'] > d['ma200']: season = "SUMMER"
     elif d['price'] < d['ma50'] and d['price'] > d['ma200']: season = "AUTUMN"
@@ -129,8 +142,7 @@ def analyze_expert_logic(d):
     score = 0
     log = {}
     
-    # [NEW] 1. VIX Term Structure Logic (Universal)
-    # Ratio = VIX (Spot) / VIX3M (Future)
+    # 1. VIX Term Structure Logic (Universal)
     vix_ratio = 1.0
     if d['vix3m'] and d['vix3m'] > 0:
         vix_ratio = d['vix'] / d['vix3m']
@@ -148,7 +160,7 @@ def analyze_expert_logic(d):
         score += pts
         log['term'] = 'normal'
     
-    log['vix_ratio'] = vix_ratio # 값 저장을 위해 추가
+    log['vix_ratio'] = vix_ratio
 
     # 2. RSI Logic
     hist_rsi = d['hist']['RSI']
@@ -252,16 +264,16 @@ def analyze_expert_logic(d):
 
     return season, score, log
 
-# === [3] 전략 탐색 및 행동 결정 (업그레이드: Backwardation 강제 차단) ===
+# === [3] 전략 탐색 및 행동 결정 ===
 def determine_action(score, season, data, log):
     vix_pct_change = ((data['vix'] - data['vix_prev']) / data['vix_prev']) * 100
     TARGET_DELTA = -0.10
     
-    # [PRIORITY 0] Backwardation Check (System Collapse)
+    # [PRIORITY 0] Backwardation Check
     if log.get('term') == 'backwardation':
         return TARGET_DELTA, "⛔ 매매 중단 (System Collapse)", "-", "-", "panic"
 
-    # [PRIORITY 1] Panic Condition (VIX Spike)
+    # [PRIORITY 1] Panic Condition
     if vix_pct_change > 15.0:
         return TARGET_DELTA, "⛔ 매매 중단 (VIX 급등)", "-", "-", "panic"
     
@@ -325,13 +337,15 @@ def find_best_option(price, iv, target_delta):
     except:
         return None
 
-# === [4] 차트 (업그레이드: VIX3M 표시) ===
+# === [4] 차트 (수정: Ratio 서브플롯 추가 및 시각화) ===
 def create_charts(data):
     hist = data['hist']
-    fig = plt.figure(figsize=(10, 16))
-    gs = fig.add_gridspec(5, 1, height_ratios=[2, 0.6, 1, 1, 1])
+    # GridSpec Height 비율 조정 (서브플롯 하나 추가됨)
+    # Price(2), Vol(0.6), RSI(1), MACD(1), VIX(1), [NEW] Ratio(1)
+    fig = plt.figure(figsize=(10, 18))
+    gs = fig.add_gridspec(6, 1, height_ratios=[2, 0.6, 1, 1, 1, 1])
     
-    # Price
+    # 1. Price
     ax1 = fig.add_subplot(gs[0])
     ax1.plot(hist.index, hist['Close'], label='QQQ', color='black', alpha=0.7)
     ax1.plot(hist.index, hist['MA20'], label='20MA', color='green', ls='--', lw=1)
@@ -343,7 +357,7 @@ def create_charts(data):
     ax1.grid(True, alpha=0.3)
     plt.setp(ax1.get_xticklabels(), visible=False)
     
-    # Volume
+    # 2. Volume
     ax_vol = fig.add_subplot(gs[1], sharex=ax1)
     colors = ['red' if c < o else 'green' for c, o in zip(hist['Close'], hist['Open'])]
     ax_vol.bar(hist.index, hist['Volume'], color=colors, alpha=0.5)
@@ -352,7 +366,7 @@ def create_charts(data):
     ax_vol.grid(True, alpha=0.3)
     plt.setp(ax_vol.get_xticklabels(), visible=False)
 
-    # RSI
+    # 3. RSI
     ax_rsi = fig.add_subplot(gs[2], sharex=ax1)
     ax_rsi.plot(hist.index, hist['RSI'], color='purple', label='RSI')
     ax_rsi.axhline(70, color='red', ls='--', alpha=0.7)
@@ -365,7 +379,7 @@ def create_charts(data):
     ax_rsi.grid(True, alpha=0.3)
     plt.setp(ax_rsi.get_xticklabels(), visible=False)
 
-    # MACD
+    # 4. MACD
     ax2 = fig.add_subplot(gs[3], sharex=ax1)
     ax2.plot(hist.index, hist['MACD'], label='MACD', color='blue')
     ax2.plot(hist.index, hist['Signal'], label='Signal', color='orange')
@@ -375,18 +389,44 @@ def create_charts(data):
     ax2.grid(True, alpha=0.3)
     plt.setp(ax2.get_xticklabels(), visible=False)
     
-    # VIX & VIX3M
+    # 5. VIX Level
     ax3 = fig.add_subplot(gs[4], sharex=ax1)
     ax3.plot(data['vix_hist'].index, data['vix_hist']['Close'], color='purple', label='VIX (Spot)')
     if data['vix3m_hist'] is not None and not data['vix3m_hist'].empty:
-         # 날짜 인덱스 맞추기 위해 reindex 사용 가능하나 간단히 plot
          ax3.plot(data['vix3m_hist'].index, data['vix3m_hist']['Close'], color='gray', ls=':', label='VIX3M (Future)')
     
     ax3.axhline(30, color='red', ls='--')
     ax3.axhline(20, color='green', ls='--')
-    ax3.set_title('Structure of Volatility (VIX vs VIX3M)', fontsize=12, fontweight='bold')
+    ax3.set_title('VIX Level (Absolute)', fontsize=12, fontweight='bold')
     ax3.legend(loc='upper right')
     ax3.grid(True, alpha=0.3)
+    plt.setp(ax3.get_xticklabels(), visible=False)
+
+    # 6. [NEW] VIX Term Structure Ratio
+    ax4 = fig.add_subplot(gs[5], sharex=ax1)
+    term_data = data.get('vix_term_df')
+    
+    if term_data is not None and not term_data.empty:
+        # Ratio Line
+        ax4.plot(term_data.index, term_data['Ratio'], color='black', lw=1.2, label='Ratio (VIX/VIX3M)')
+        
+        # Guidelines (1.0 Backwardation, 0.9 Contango)
+        ax4.axhline(1.0, color='red', ls='--', alpha=0.8, lw=1)
+        ax4.axhline(0.9, color='green', ls='--', alpha=0.8, lw=1)
+        
+        # Fill Areas
+        # Danger Zone (> 1.0)
+        ax4.fill_between(term_data.index, term_data['Ratio'], 1.0, 
+                         where=(term_data['Ratio'] > 1.0), 
+                         color='red', alpha=0.2, label='Backwardation (Danger)')
+        # Opportunity Zone (< 0.9)
+        ax4.fill_between(term_data.index, term_data['Ratio'], 0.9, 
+                         where=(term_data['Ratio'] < 0.9), 
+                         color='green', alpha=0.2, label='Contango (Safe)')
+        
+    ax4.set_title('Structure of Volatility (Ratio = VIX / VIX3M)', fontsize=12, fontweight='bold')
+    ax4.legend(loc='upper right')
+    ax4.grid(True, alpha=0.3)
     
     plt.tight_layout()
     return fig
@@ -429,15 +469,7 @@ def main():
     th_style = "style='border: 1px solid #ddd; padding: 8px; color: black; background-color: #f2f2f2;'"
     
     # Term Structure Color Logic
-    term_val = log.get('term')
-    term_color = "black"
-    term_bg = "white"
-    if term_val == 'contango': 
-        term_color = "green"
-        term_bg = "#e8f5e9"
-    elif term_val == 'backwardation': 
-        term_color = "red"
-        term_bg = "#ffebee"
+    vix_ratio_disp = f"{log.get('vix_ratio', 0):.2f}"
 
     # 1. Season Matrix
     html_season_list = [
@@ -455,9 +487,7 @@ def main():
     ]
     st.markdown("".join(html_season_list), unsafe_allow_html=True)
 
-    # 2. Scorecard (업그레이드: VIX Term Structure 추가)
-    vix_ratio_disp = f"{log.get('vix_ratio', 0):.2f}"
-    
+    # 2. Scorecard
     html_score_list = [
         "<h3>2. Expert Matrix Scorecard</h3>",
         "<table style='border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 14px; text-align: center;'>",
@@ -467,7 +497,7 @@ def main():
         f"<th {th_style}>Logic</th>",
         "</tr>",
         
-        # [NEW] VIX Term Structure Row (Universal)
+        # VIX Term Structure Row (Universal)
         f"<tr><td rowspan='3' {td_style}><b>VIX Term</b><br><span style='font-size:11px; color:blue;'>Ratio: {vix_ratio_disp}</span></td>",
         f"<td {td_style}><b>Easy Money</b><br>(Contango &lt;0.9)</td>",
         f"<td colspan='4' {hl_score('term', 'contango', 'ALL')}>+3 (Universal)</td>",
