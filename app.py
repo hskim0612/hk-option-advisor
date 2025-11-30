@@ -4,8 +4,8 @@ import pandas as pd
 import numpy as np
 from scipy.stats import norm
 from datetime import datetime
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 
 # === [앱 보안 설정] ===
 APP_PASSWORD = "1979"
@@ -16,6 +16,10 @@ st.set_page_config(
     page_icon="🦅",
     layout="wide"
 )
+
+# 차트 스타일 설정
+plt.style.use('seaborn-v0_8-darkgrid')
+plt.rcParams['font.family'] = 'sans-serif'
 
 # === [0] 로그인 화면 ===
 def check_password():
@@ -39,7 +43,7 @@ def check_password():
 if not check_password():
     st.stop()
 
-# === [1] 데이터 수집 ===
+# === [1] 데이터 수집 (수정: 인덱스 정규화 및 안전 병합) ===
 @st.cache_data(ttl=1800)
 def get_market_data():
     # 1. QQQ 데이터
@@ -72,13 +76,13 @@ def get_market_data():
     
     hist['Vol_MA20'] = hist['Volume'].rolling(window=20).mean()
     
-    # 2. VIX & VIX3M 데이터 처리
+    # 2. VIX & VIX3M 데이터 처리 (핵심 수정 구간)
     vix_ticker = yf.Ticker("^VIX")
     vix_hist = vix_ticker.history(period="1y")
     
     vix3m_val = None
     vix3m_hist = None
-    vix_term_df = None 
+    vix_term_df = None  # 초기화
 
     try:
         vix3m_ticker = yf.Ticker("^VIX3M")
@@ -87,10 +91,12 @@ def get_market_data():
         if not vix3m_hist.empty and not vix_hist.empty:
             vix3m_val = vix3m_hist['Close'].iloc[-1]
             
-            # Timezone 제거 및 날짜 정규화
+            # [CRITICAL FIX] Timezone 제거 및 날짜 정규화
+            # df.copy()를 사용하여 원본 보존
             df_vix = vix_hist[['Close']].copy()
             df_vix3m = vix3m_hist[['Close']].copy()
             
+            # Timezone 정보를 날리고(naive), 시간(00:00:00)으로 정규화
             df_vix.index = df_vix.index.tz_localize(None).normalize()
             df_vix3m.index = df_vix3m.index.tz_localize(None).normalize()
             
@@ -103,13 +109,16 @@ def get_market_data():
                 suffixes=('_VIX', '_VIX3M')
             )
             
+            # 데이터 개수 검증 (30일 이상일 때만 유효)
             if len(merged_df) >= 30:
                 merged_df['Ratio'] = merged_df['Close_VIX'] / merged_df['Close_VIX3M']
                 vix_term_df = merged_df
             else:
+                # 데이터가 너무 적음
                 vix_term_df = None
 
     except Exception as e:
+        # 에러 발생 시 None 유지 (앱 중단 방지)
         vix3m_val = None
         vix_term_df = None
         print(f"Error fetching VIX3M: {e}")
@@ -350,166 +359,108 @@ def find_best_option(price, iv, target_delta):
     except:
         return None
 
-# === [4] 차트 (수정: Plotly + Click-to-Lock) ===
-def create_charts(data, locked_date=None):
+# === [4] 차트 (수정: 에러 핸들링 및 시각화 개선) ===
+def create_charts(data):
     hist = data['hist']
-    vix_hist = data['vix_hist']
-    vix3m_hist = data['vix3m_hist']
-    term_df = data.get('vix_term_df')
+    fig = plt.figure(figsize=(10, 18))
+    gs = fig.add_gridspec(6, 1, height_ratios=[2, 0.6, 1, 1, 1, 1])
     
-    # 1. Subplots 생성 (비율: Price 30%, Vol 10%, 나머지 15%씩)
-    fig = make_subplots(
-        rows=6, cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.03,
-        row_heights=[0.30, 0.10, 0.15, 0.15, 0.15, 0.15],
-        subplot_titles=(
-            "QQQ Price Trend", 
-            f"Volume ({data['vol_pct']:.1f}%)", 
-            "RSI (14)", 
-            "MACD", 
-            "VIX Level (Absolute)", 
-            "Structure of Volatility (Ratio = VIX / VIX3M)"
-        )
-    )
+    # 1. Price
+    ax1 = fig.add_subplot(gs[0])
+    ax1.plot(hist.index, hist['Close'], label='QQQ', color='black', alpha=0.7)
+    ax1.plot(hist.index, hist['MA20'], label='20MA', color='green', ls='--', lw=1)
+    ax1.plot(hist.index, hist['MA50'], label='50MA', color='blue', ls='-', lw=1.5)
+    ax1.plot(hist.index, hist['MA200'], label='200MA', color='red', ls='-', lw=2)
+    ax1.fill_between(hist.index, hist['BB_Upper'], hist['BB_Lower'], color='gray', alpha=0.1, label='Bollinger')
+    ax1.set_title('QQQ Price Trend', fontsize=12, fontweight='bold')
+    ax1.legend(loc='upper left')
+    ax1.grid(True, alpha=0.3)
+    plt.setp(ax1.get_xticklabels(), visible=False)
+    
+    # 2. Volume
+    ax_vol = fig.add_subplot(gs[1], sharex=ax1)
+    colors = ['red' if c < o else 'green' for c, o in zip(hist['Close'], hist['Open'])]
+    ax_vol.bar(hist.index, hist['Volume'], color=colors, alpha=0.5)
+    ax_vol.plot(hist.index, hist['Vol_MA20'], color='black', lw=1)
+    ax_vol.set_title(f"Volume ({data['vol_pct']:.1f}%)", fontsize=10, fontweight='bold')
+    ax_vol.grid(True, alpha=0.3)
+    plt.setp(ax_vol.get_xticklabels(), visible=False)
 
-    # === 1. Price Chart (Row 1) ===
-    # Bollinger Band (Upper & Lower - Area Fill)
-    fig.add_trace(go.Scatter(x=hist.index, y=hist['BB_Upper'], line=dict(width=0), 
-                             showlegend=False, hoverinfo='skip'), row=1, col=1)
-    fig.add_trace(go.Scatter(x=hist.index, y=hist['BB_Lower'], line=dict(width=0), 
-                             fill='tonexty', fillcolor='rgba(128, 128, 128, 0.1)', 
-                             name='Bollinger', hoverinfo='skip'), row=1, col=1)
-    
-    # Moving Averages
-    fig.add_trace(go.Scatter(x=hist.index, y=hist['MA200'], line=dict(color='red', width=1.5), name='200MA', hovertemplate='200MA: $%{y:.2f}<extra></extra>'), row=1, col=1)
-    fig.add_trace(go.Scatter(x=hist.index, y=hist['MA50'], line=dict(color='blue', width=1.5), name='50MA', hovertemplate='50MA: $%{y:.2f}<extra></extra>'), row=1, col=1)
-    fig.add_trace(go.Scatter(x=hist.index, y=hist['MA20'], line=dict(color='green', width=1, dash='dot'), name='20MA', hovertemplate='20MA: $%{y:.2f}<extra></extra>'), row=1, col=1)
-    
-    # Price
-    fig.add_trace(go.Scatter(x=hist.index, y=hist['Close'], line=dict(color='black', width=1.5), name='Close', hovertemplate='Close: $%{y:.2f}<extra></extra>'), row=1, col=1)
+    # 3. RSI
+    ax_rsi = fig.add_subplot(gs[2], sharex=ax1)
+    ax_rsi.plot(hist.index, hist['RSI'], color='purple', label='RSI')
+    ax_rsi.axhline(70, color='red', ls='--', alpha=0.7)
+    ax_rsi.axhline(30, color='green', ls='--', alpha=0.7)
+    ax_rsi.axhline(50, color='black', lw=0.5, alpha=0.5)
+    ax_rsi.fill_between(hist.index, hist['RSI'], 70, where=(hist['RSI'] >= 70), color='red', alpha=0.3)
+    ax_rsi.fill_between(hist.index, hist['RSI'], 30, where=(hist['RSI'] <= 30), color='green', alpha=0.3)
+    ax_rsi.set_ylim(0, 100)
+    ax_rsi.set_title('RSI (14)', fontsize=12, fontweight='bold')
+    ax_rsi.grid(True, alpha=0.3)
+    plt.setp(ax_rsi.get_xticklabels(), visible=False)
 
-    # === 2. Volume Chart (Row 2) ===
-    # Color Logic: Close >= Open (Green), Close < Open (Red)
-    colors = ['green' if c >= o else 'red' for c, o in zip(hist['Close'], hist['Open'])]
-    fig.add_trace(go.Bar(x=hist.index, y=hist['Volume'], marker_color=colors, name='Volume', opacity=0.5, hovertemplate='Vol: %{y}<extra></extra>'), row=2, col=1)
-    fig.add_trace(go.Scatter(x=hist.index, y=hist['Vol_MA20'], line=dict(color='black', width=1), name='Vol MA20', hovertemplate='VolMA: %{y}<extra></extra>'), row=2, col=1)
+    # 4. MACD
+    ax2 = fig.add_subplot(gs[3], sharex=ax1)
+    ax2.plot(hist.index, hist['MACD'], label='MACD', color='blue')
+    ax2.plot(hist.index, hist['Signal'], label='Signal', color='orange')
+    ax2.bar(hist.index, hist['MACD']-hist['Signal'], color='gray', alpha=0.3)
+    ax2.axhline(0, color='black', lw=0.8)
+    ax2.set_title('MACD', fontsize=12, fontweight='bold')
+    ax2.grid(True, alpha=0.3)
+    plt.setp(ax2.get_xticklabels(), visible=False)
+    
+    # 5. VIX Level
+    ax3 = fig.add_subplot(gs[4], sharex=ax1)
+    ax3.plot(data['vix_hist'].index, data['vix_hist']['Close'], color='purple', label='VIX (Spot)')
+    if data['vix3m_hist'] is not None and not data['vix3m_hist'].empty:
+         ax3.plot(data['vix3m_hist'].index, data['vix3m_hist']['Close'], color='gray', ls=':', label='VIX3M (Future)')
+    
+    ax3.axhline(30, color='red', ls='--')
+    ax3.axhline(20, color='green', ls='--')
+    ax3.set_title('VIX Level (Absolute)', fontsize=12, fontweight='bold')
+    ax3.legend(loc='upper right')
+    ax3.grid(True, alpha=0.3)
+    plt.setp(ax3.get_xticklabels(), visible=False)
 
-    # === 3. RSI Chart (Row 3) ===
-    fig.add_trace(go.Scatter(x=hist.index, y=hist['RSI'], line=dict(color='purple', width=1.5), name='RSI', hovertemplate='RSI: %{y:.1f}<extra></extra>'), row=3, col=1)
+    # 6. [NEW] VIX Term Structure Ratio (수정)
+    ax4 = fig.add_subplot(gs[5], sharex=ax1)
+    term_data = data.get('vix_term_df')
     
-    # RSI Reference Lines & Zones
-    fig.add_hline(y=70, line_dash="dot", line_color="red", row=3, col=1)
-    fig.add_hline(y=30, line_dash="dot", line_color="green", row=3, col=1)
-    fig.add_hline(y=50, line_width=0.5, line_color="black", row=3, col=1)
-    
-    # RSI Background coloring (Over/Under)
-    rsi_upper = hist['RSI'].clip(lower=70)
-    fig.add_trace(go.Scatter(x=hist.index, y=rsi_upper, line=dict(width=0), 
-                             fill='tozeroy', fillcolor='rgba(255, 0, 0, 0.0)', showlegend=False, hoverinfo='skip'), row=3, col=1)
-    
-    # === 4. MACD Chart (Row 4) ===
-    fig.add_trace(go.Scatter(x=hist.index, y=hist['MACD'], line=dict(color='blue', width=1), name='MACD', hovertemplate='MACD: %{y:.2f}<extra></extra>'), row=4, col=1)
-    fig.add_trace(go.Scatter(x=hist.index, y=hist['Signal'], line=dict(color='orange', width=1), name='Signal', hovertemplate='Sig: %{y:.2f}<extra></extra>'), row=4, col=1)
-    fig.add_trace(go.Bar(x=hist.index, y=hist['MACD']-hist['Signal'], marker_color='gray', opacity=0.3, name='Hist', hovertemplate='Hist: %{y:.2f}<extra></extra>'), row=4, col=1)
-    fig.add_hline(y=0, line_width=0.8, line_color="black", row=4, col=1)
-
-    # === 5. VIX Level Chart (Row 5) ===
-    fig.add_trace(go.Scatter(x=vix_hist.index, y=vix_hist['Close'], line=dict(color='purple', width=1.5), name='VIX', hovertemplate='VIX: %{y:.2f}<extra></extra>'), row=5, col=1)
-    if vix3m_hist is not None and not vix3m_hist.empty:
-        fig.add_trace(go.Scatter(x=vix3m_hist.index, y=vix3m_hist['Close'], line=dict(color='gray', width=1, dash='dot'), name='VIX3M', hovertemplate='VIX3M: %{y:.2f}<extra></extra>'), row=5, col=1)
-    
-    fig.add_hline(y=30, line_dash="dash", line_color="red", annotation_text="Panic", row=5, col=1)
-    fig.add_hline(y=20, line_dash="dash", line_color="green", annotation_text="Stable", row=5, col=1)
-
-    # === 6. VIX Ratio Chart (Row 6) ===
-    if term_df is not None and not term_df.empty:
+    if term_data is not None and not term_data.empty:
         # Ratio Line
-        fig.add_trace(go.Scatter(x=term_df.index, y=term_df['Ratio'], line=dict(color='black', width=1.2), name='Ratio', hovertemplate='Ratio: %{y:.3f}<extra></extra>'), row=6, col=1)
+        ax4.plot(term_data.index, term_data['Ratio'], color='black', lw=1.2, label='Ratio (VIX/VIX3M)')
         
         # Guidelines
-        fig.add_hline(y=1.0, line_dash="dash", line_color="red", row=6, col=1)
-        fig.add_hline(y=0.9, line_dash="dash", line_color="green", row=6, col=1)
-
-        # Conditional Fills Logic
-        # 1. Backwardation (> 1.0)
-        ratio_high = term_df['Ratio'].apply(lambda x: max(x, 1.0))
-        fig.add_trace(go.Scatter(x=term_df.index, y=[1.0]*len(term_df), line=dict(width=0), showlegend=False, hoverinfo='skip'), row=6, col=1)
-        fig.add_trace(go.Scatter(x=term_df.index, y=ratio_high, fill='tonexty', fillcolor='rgba(255, 0, 0, 0.2)', 
-                                 line=dict(width=0), name='Backwardation', hoverinfo='skip'), row=6, col=1)
-
-        # 2. Contango (< 0.9)
-        ratio_low = term_df['Ratio'].apply(lambda x: min(x, 0.9))
-        fig.add_trace(go.Scatter(x=term_df.index, y=[0.9]*len(term_df), line=dict(width=0), showlegend=False, hoverinfo='skip'), row=6, col=1)
-        fig.add_trace(go.Scatter(x=term_df.index, y=ratio_low, fill='tonexty', fillcolor='rgba(0, 128, 0, 0.2)', 
-                                 line=dict(width=0), name='Contango', hoverinfo='skip'), row=6, col=1)
+        ax4.axhline(1.0, color='red', ls='--', alpha=0.8, lw=1)
+        ax4.axhline(0.9, color='green', ls='--', alpha=0.8, lw=1)
+        
+        # Fill Areas (Explicitly handling index)
+        # Danger Zone
+        ax4.fill_between(term_data.index, term_data['Ratio'], 1.0, 
+                         where=(term_data['Ratio'] > 1.0), 
+                         color='red', alpha=0.2, label='Backwardation')
+        # Opportunity Zone
+        ax4.fill_between(term_data.index, term_data['Ratio'], 0.9, 
+                         where=(term_data['Ratio'] < 0.9), 
+                         color='green', alpha=0.2, label='Contango')
+        
+        ax4.legend(loc='upper right')
     else:
-        fig.add_annotation(text="데이터 부족: VIX/VIX3M Ratio 표시 불가", 
-                           xref="x domain", yref="y domain", x=0.5, y=0.5, showarrow=False, font=dict(color="red"), row=6, col=1)
-
-    # [새 기능] 고정 수직선 추가
-    if locked_date is not None:
-        fig.add_vline(
-            x=locked_date, 
-            line=dict(color='black', width=2, dash='solid'),
-            opacity=0.9,
-            annotation_text=f"🔒 {locked_date.strftime('%Y-%m-%d')}", 
-            annotation_position="top"
-        )
-
-    # === Global Layout Settings ===
-    fig.update_layout(
-        height=1500,  # 전체 높이 설정
-        showlegend=True,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        plot_bgcolor='white',
-        hovermode='x unified',  # [핵심] 모든 데이터 동시 표시
-        hoverlabel=dict(
-            bgcolor="white",
-            font_size=11,
-            font_color="black",
-            font_family="Arial"
-        ),
-        margin=dict(t=50, b=50, l=50, r=50)
-    )
-
-    # X축 설정 (Spike Line 포함)
-    fig.update_xaxes(
-        showgrid=True, gridwidth=1, gridcolor='#f0f0f0', 
-        rangeslider_visible=False,
-        showspikes=True,
-        spikemode='across',      # [핵심] 차트 전체 관통
-        spikesnap='cursor',
-        spikethickness=1,
-        spikecolor='rgba(150, 150, 150, 0.4)',  # 연한 회색 가이드
-        spikedash='dot'
-    )
-    fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='#f0f0f0', showspikes=False)
-
-    # RSI Y축 고정
-    fig.update_yaxes(range=[0, 100], row=3, col=1)
-
+        # 데이터 부족 시 메시지 표시
+        ax4.text(0.5, 0.5, "데이터 부족: Ratio 그래프를 그릴 수 없습니다.\n(VIX/VIX3M 병합 실패)", 
+                 horizontalalignment='center', verticalalignment='center', 
+                 transform=ax4.transAxes, fontsize=12, color='red')
+        
+    ax4.set_title('Structure of Volatility (Ratio = VIX / VIX3M)', fontsize=12, fontweight='bold')
+    ax4.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
     return fig
 
 # === [메인 화면] ===
 def main():
-    # [1] Session State 초기화 (날짜 고정용)
-    if 'locked_date' not in st.session_state:
-        st.session_state.locked_date = None
-
     st.title("🦅 HK Advisory (Grand Master v20.0)")
     st.caption(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | System: Institutional Grade")
-
-    # [2] 고정 해제 버튼 (고정 상태일 때만 표시)
-    if st.session_state.locked_date:
-        col1, col2 = st.columns([6, 1])
-        with col2:
-            if st.button("🔓 고정 해제"):
-                st.session_state.locked_date = None
-                st.session_state["main_chart"] = None  # [중요] 차트 선택 상태도 강제 초기화
-                st.rerun()
-        with col1:
-             st.info(f"🔒 고정된 시점: {st.session_state.locked_date.strftime('%Y년 %m월 %d일')} | 차트의 다른 지점을 클릭하면 이동합니다.")
 
     with st.spinner('시장 구조 및 변동성 정밀 분석 중...'):
         try:
@@ -521,7 +472,7 @@ def main():
             st.error(f"오류 발생: {e}")
             return
 
-    # [NEW] Sidebar Debugging Panel
+    # [NEW] Sidebar Debugging Panel (수정)
     st.sidebar.title("🛠️ 시스템 상태")
     st.sidebar.markdown("---")
     
@@ -535,6 +486,7 @@ def main():
     st.sidebar.metric("VIX Raw Data", f"{vix_count} rows")
     st.sidebar.metric("VIX3M Raw Data", f"{vix3m_count} rows")
     
+    # Ratio 데이터 상태에 따른 색상 표시
     if ratio_count > 0:
         st.sidebar.success(f"Ratio Merged: {ratio_count} rows")
         curr_ratio = term_df['Ratio'].iloc[-1]
@@ -593,7 +545,7 @@ def main():
         f"<th {th_style}>Logic</th>",
         "</tr>",
         
-        # VIX Term Structure
+        # VIX Term Structure Row (Universal)
         f"<tr><td rowspan='3' {td_style}><b>VIX Term</b><br><span style='font-size:11px; color:blue;'>Ratio: {vix_ratio_disp}</span></td>",
         f"<td {td_style}><b>Easy Money</b><br>(Contango &lt;0.9)</td>",
         f"<td colspan='4' {hl_score('term', 'contango', 'ALL')}>+3 (Universal)</td>",
@@ -625,7 +577,7 @@ def main():
         f"<td {hl_score('rsi', 'escape', 'SUMMER')}>3~5</td><td {hl_score('rsi', 'escape', 'AUTUMN')}>3~5</td><td {hl_score('rsi', 'escape', 'WINTER')}>3~5</td><td {hl_score('rsi', 'escape', 'SPRING')}>3~5</td>",
         f"<td align='left' {td_style}><b>Best Timing</b></td></tr>",
         
-        # VIX Level
+        # VIX
         f"<tr><td rowspan='4' {td_style}>VIX (Level)</td>",
         f"<td {td_style}>안정 (<20)</td>",
         f"<td {hl_score('vix', 'stable', 'SUMMER')}>+2</td><td {hl_score('vix', 'stable', 'AUTUMN')}>0</td><td {hl_score('vix', 'stable', 'WINTER')}>-2</td><td {hl_score('vix', 'stable', 'SPRING')}>+1</td>",
@@ -657,11 +609,12 @@ def main():
         f"<td {hl_score('bb', 'return', 'SUMMER')}>+4</td><td {hl_score('bb', 'return', 'AUTUMN')}>+3</td><td {hl_score('bb', 'return', 'WINTER')}>+5</td><td {hl_score('bb', 'return', 'SPRING')}>+4</td>",
         f"<td align='left' {td_style}><b>Close In</b></td></tr>",
         
-        # Trend & Volume & MACD
-        f"<tr><td {td_style}>추세 (20MA)</td><td {td_style}>20일선 위</td>",
+        # Trend
+        f"<tr><td {td_style}>추세 (20MA)<br><span style='font-size:11px; color:#888; font-weight:normal'>지금 당장의 추세모습</span></td><td {td_style}>20일선 위</td>",
         f"<td {hl_score('trend', 'up', 'SUMMER')}>+2</td><td {hl_score('trend', 'up', 'AUTUMN')}>+2</td><td {hl_score('trend', 'up', 'WINTER')}>+3</td><td {hl_score('trend', 'up', 'SPRING')}>+3</td>",
         f"<td align='left' {td_style}>회복</td></tr>",
         
+        # Volume
         f"<tr><td {td_style}>거래량</td><td {td_style}>폭증 (>150%)</td>",
         f"<td {hl_score('vol', 'explode', 'SUMMER')}>+2</td><td {hl_score('vol', 'explode', 'AUTUMN')}>+3</td><td {hl_score('vol', 'explode', 'WINTER')}>+3</td><td {hl_score('vol', 'explode', 'SPRING')}>+2</td>",
         f"<td align='left' {td_style}><b>손바뀜</b></td></tr>",
@@ -670,20 +623,21 @@ def main():
         f"<td {hl_score('vol', 'normal', 'SUMMER')}>0</td><td {hl_score('vol', 'normal', 'AUTUMN')}>0</td><td {hl_score('vol', 'normal', 'WINTER')}>0</td><td {hl_score('vol', 'normal', 'SPRING')}>0</td>",
         f"<td align='left' {td_style}>-</td></tr>",
         
-        f"<tr><td rowspan='4' {td_style}>MACD</td>",
-        f"<td {td_style}>📈 상승 전환</td>",
+        # MACD
+        f"<tr><td rowspan='4' {td_style}>MACD<br><span style='font-size:11px; color:#888; font-weight:normal'>상승장? 하락장?<br>(방향을 이끄는 힘)</span></td>",
+        f"<td {td_style}>📈 상승 전환<br>(골든크로스)</td>",
         f"<td {hl_score('macd', 'break_up', 'SUMMER')}>+3</td><td {hl_score('macd', 'break_up', 'AUTUMN')}>+3</td><td {hl_score('macd', 'break_up', 'WINTER')}>+3</td><td {hl_score('macd', 'break_up', 'SPRING')}>+3</td>",
         f"<td align='left' {td_style}><b>강력 매수</b></td></tr>",
         
-        f"<tr><td {td_style}>☁️ 상승 추세</td>",
+        f"<tr><td {td_style}>☁️ 상승 추세<br>(에너지 강)</td>",
         f"<td {hl_score('macd', 'above', 'SUMMER')}>+1</td><td {hl_score('macd', 'above', 'AUTUMN')}>+1</td><td {hl_score('macd', 'above', 'WINTER')}>+1</td><td {hl_score('macd', 'above', 'SPRING')}>+1</td>",
         f"<td align='left' {td_style}>순풍</td></tr>",
         
-        f"<tr><td {td_style}>📉 하락 전환</td>",
+        f"<tr><td {td_style}>📉 하락 전환<br>(데드크로스)</td>",
         f"<td {hl_score('macd', 'break_down', 'SUMMER')}>-3</td><td {hl_score('macd', 'break_down', 'AUTUMN')}>-3</td><td {hl_score('macd', 'break_down', 'WINTER')}>-3</td><td {hl_score('macd', 'break_down', 'SPRING')}>-3</td>",
         f"<td align='left' {td_style}><b>강력 매도</b></td></tr>",
         
-        f"<tr><td {td_style}>☔ 하락 추세</td>",
+        f"<tr><td {td_style}>☔ 하락 추세<br>(에너지 약)</td>",
         f"<td {hl_score('macd', 'below', 'SUMMER')}>-1</td><td {hl_score('macd', 'below', 'AUTUMN')}>-1</td><td {hl_score('macd', 'below', 'WINTER')}>-1</td><td {hl_score('macd', 'below', 'SPRING')}>-1</td>",
         f"<td align='left' {td_style}>역풍</td></tr>",
         
@@ -803,56 +757,9 @@ def main():
         st.markdown("".join(html_warning_list), unsafe_allow_html=True)
 
     st.markdown("---")
-    st.subheader("📈 기술적 분석 차트 (Interactive)")
-    
-    # [3] 차트 생성 (Session State의 locked_date 전달)
-    chart_fig = create_charts(data, locked_date=st.session_state.locked_date)
-    
-    # [4] 차트 출력 (Key를 지정하여 Session State에 이벤트 저장)
-    st.plotly_chart(
-        chart_fig, 
-        use_container_width=True, 
-        on_select="rerun",
-        selection_mode="points",
-        key="main_chart"
-    )
-
-    # [5] 이벤트 처리: Session State에서 직접 데이터 추출 (안전한 방식)
-    if "main_chart" in st.session_state and st.session_state["main_chart"]:
-        selection_data = st.session_state["main_chart"]
-        
-        # selection 데이터 구조 검증
-        if "selection" in selection_data and "points" in selection_data["selection"]:
-            points = selection_data["selection"]["points"]
-            
-            # 클릭된 포인트가 존재할 경우
-            if len(points) > 0:
-                # 1. 날짜 추출
-                clicked_x = points[0]["x"]
-                
-                # 2. 날짜 형식 정규화 (Timezone 제거하여 비교 오류 방지)
-                if isinstance(clicked_x, str):
-                    clicked_date = pd.to_datetime(clicked_x).tz_localize(None)
-                else:
-                    clicked_date = pd.to_datetime(clicked_x).tz_localize(None)
-                
-                # 3. 상태 업데이트 (기존과 다를 때만 실행 -> 무한 루프 방지)
-                # 주의: locked_date가 None이거나, 클릭한 날짜가 현재 고정된 날짜와 다를 때만 갱신
-                current_locked = st.session_state.locked_date
-                if current_locked is None or current_locked != clicked_date:
-                    st.session_state.locked_date = clicked_date
-                    
-                    # 모바일 터치 피드백 (선택 사항)
-                    st.toast(f"📅 {clicked_date.strftime('%Y-%m-%d')} 시점이 고정되었습니다.", icon="🔒")
-                    
-                    # 이벤트 상태 초기화 (중복 처리 방지)
-                    st.session_state["main_chart"] = None 
-                    st.rerun()
-
-    # --- [Debug Info] ---
-    # st.sidebar.markdown("---")
-    # if "main_chart" in st.session_state:
-    #     st.sidebar.write("Last Selection:", st.session_state["main_chart"])
+    st.subheader("📈 기술적 분석 차트")
+    st.pyplot(create_charts(data))
 
 if __name__ == "__main__":
     main()
+
