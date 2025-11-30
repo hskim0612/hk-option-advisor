@@ -506,6 +506,7 @@ def main():
         with col2:
             if st.button("🔓 고정 해제"):
                 st.session_state.locked_date = None
+                st.session_state["main_chart"] = None  # [중요] 차트 선택 상태도 강제 초기화
                 st.rerun()
         with col1:
              st.info(f"🔒 고정된 시점: {st.session_state.locked_date.strftime('%Y년 %m월 %d일')} | 차트의 다른 지점을 클릭하면 이동합니다.")
@@ -656,7 +657,7 @@ def main():
         f"<td {hl_score('bb', 'return', 'SUMMER')}>+4</td><td {hl_score('bb', 'return', 'AUTUMN')}>+3</td><td {hl_score('bb', 'return', 'WINTER')}>+5</td><td {hl_score('bb', 'return', 'SPRING')}>+4</td>",
         f"<td align='left' {td_style}><b>Close In</b></td></tr>",
         
-        # Trend & Volume & MACD (Same structure as previous, keeping brevity)
+        # Trend & Volume & MACD
         f"<tr><td {td_style}>추세 (20MA)</td><td {td_style}>20일선 위</td>",
         f"<td {hl_score('trend', 'up', 'SUMMER')}>+2</td><td {hl_score('trend', 'up', 'AUTUMN')}>+2</td><td {hl_score('trend', 'up', 'WINTER')}>+3</td><td {hl_score('trend', 'up', 'SPRING')}>+3</td>",
         f"<td align='left' {td_style}>회복</td></tr>",
@@ -807,8 +808,8 @@ def main():
     # [3] 차트 생성 (Session State의 locked_date 전달)
     chart_fig = create_charts(data, locked_date=st.session_state.locked_date)
     
-    # [4] on_select 이벤트로 클릭(터치) 감지
-    event = st.plotly_chart(
+    # [4] 차트 출력 (Key를 지정하여 Session State에 이벤트 저장)
+    st.plotly_chart(
         chart_fig, 
         use_container_width=True, 
         on_select="rerun",
@@ -816,18 +817,42 @@ def main():
         key="main_chart"
     )
 
-    # [5] 이벤트 처리: 클릭된 날짜 추출 및 저장
-    if event and event.selection and event.selection.points:
-        clicked_x = event.selection.points[0]['x']
+    # [5] 이벤트 처리: Session State에서 직접 데이터 추출 (안전한 방식)
+    if "main_chart" in st.session_state and st.session_state["main_chart"]:
+        selection_data = st.session_state["main_chart"]
         
-        # 날짜 형식 변환
-        if isinstance(clicked_x, str):
-            clicked_date = pd.to_datetime(clicked_x)
-        else:
-            clicked_date = clicked_x
+        # selection 데이터 구조 검증
+        if "selection" in selection_data and "points" in selection_data["selection"]:
+            points = selection_data["selection"]["points"]
             
-        st.session_state.locked_date = clicked_date
-        st.rerun()
+            # 클릭된 포인트가 존재할 경우
+            if len(points) > 0:
+                # 1. 날짜 추출
+                clicked_x = points[0]["x"]
+                
+                # 2. 날짜 형식 정규화 (Timezone 제거하여 비교 오류 방지)
+                if isinstance(clicked_x, str):
+                    clicked_date = pd.to_datetime(clicked_x).tz_localize(None)
+                else:
+                    clicked_date = pd.to_datetime(clicked_x).tz_localize(None)
+                
+                # 3. 상태 업데이트 (기존과 다를 때만 실행 -> 무한 루프 방지)
+                # 주의: locked_date가 None이거나, 클릭한 날짜가 현재 고정된 날짜와 다를 때만 갱신
+                current_locked = st.session_state.locked_date
+                if current_locked is None or current_locked != clicked_date:
+                    st.session_state.locked_date = clicked_date
+                    
+                    # 모바일 터치 피드백 (선택 사항)
+                    st.toast(f"📅 {clicked_date.strftime('%Y-%m-%d')} 시점이 고정되었습니다.", icon="🔒")
+                    
+                    # 이벤트 상태 초기화 (중복 처리 방지)
+                    st.session_state["main_chart"] = None 
+                    st.rerun()
+
+    # --- [Debug Info] ---
+    # st.sidebar.markdown("---")
+    # if "main_chart" in st.session_state:
+    #     st.sidebar.write("Last Selection:", st.session_state["main_chart"])
 
 if __name__ == "__main__":
     main()
