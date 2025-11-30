@@ -12,8 +12,8 @@ APP_PASSWORD = "1979"
 
 # === [페이지 기본 설정] ===
 st.set_page_config(
-    page_title="HK 옵션투자자문 (Expert v18.4 - Action Plan)",
-    page_icon="📊",
+    page_title="HK 옵션투자자문 (Grand Master v20.0)",
+    page_icon="🦅",
     layout="wide"
 )
 
@@ -43,7 +43,7 @@ def check_password():
 if not check_password():
     st.stop()
 
-# === [1] 데이터 수집 ===
+# === [1] 데이터 수집 (업그레이드: VIX3M 추가) ===
 @st.cache_data(ttl=1800)
 def get_market_data():
     qqq = yf.Ticker("QQQ")
@@ -75,8 +75,20 @@ def get_market_data():
     
     hist['Vol_MA20'] = hist['Volume'].rolling(window=20).mean()
     
-    # VIX
-    vix_hist = yf.Ticker("^VIX").history(period="1y")
+    # VIX 데이터
+    vix_ticker = yf.Ticker("^VIX")
+    vix_hist = vix_ticker.history(period="1y")
+    
+    # [NEW] VIX3M 데이터 (예외처리 포함)
+    vix3m_val = None
+    vix3m_hist = None
+    try:
+        vix3m_ticker = yf.Ticker("^VIX3M")
+        vix3m_hist = vix3m_ticker.history(period="1y")
+        if not vix3m_hist.empty:
+            vix3m_val = vix3m_hist['Close'].iloc[-1]
+    except Exception as e:
+        vix3m_val = None  # 데이터 로드 실패 시 None 처리
     
     curr = hist.iloc[-1]
     prev = hist.iloc[-2]
@@ -102,11 +114,12 @@ def get_market_data():
         'macd_prev': prev['MACD'], 'signal_prev': prev['Signal'],
         'volume': curr['Volume'], 'vol_ma20': curr['Vol_MA20'], 'vol_pct': vol_pct,
         'vix': curr_vix, 'vix_prev': prev_vix,
+        'vix3m': vix3m_val, # [NEW]
         'iv': current_iv,
-        'hist': hist, 'vix_hist': vix_hist
+        'hist': hist, 'vix_hist': vix_hist, 'vix3m_hist': vix3m_hist
     }
 
-# === [2] 전문가 로직 ===
+# === [2] 전문가 로직 (업그레이드: VIX Term Structure 반영) ===
 def analyze_expert_logic(d):
     if d['price'] > d['ma50'] and d['price'] > d['ma200']: season = "SUMMER"
     elif d['price'] < d['ma50'] and d['price'] > d['ma200']: season = "AUTUMN"
@@ -116,7 +129,28 @@ def analyze_expert_logic(d):
     score = 0
     log = {}
     
-    # RSI Logic
+    # [NEW] 1. VIX Term Structure Logic (Universal)
+    # Ratio = VIX (Spot) / VIX3M (Future)
+    vix_ratio = 1.0
+    if d['vix3m'] and d['vix3m'] > 0:
+        vix_ratio = d['vix'] / d['vix3m']
+    
+    if vix_ratio > 1.0:
+        pts = -10
+        score += pts
+        log['term'] = 'backwardation'
+    elif vix_ratio < 0.9:
+        pts = 3
+        score += pts
+        log['term'] = 'contango'
+    else:
+        pts = 0
+        score += pts
+        log['term'] = 'normal'
+    
+    log['vix_ratio'] = vix_ratio # 값 저장을 위해 추가
+
+    # 2. RSI Logic
     hist_rsi = d['hist']['RSI']
     curr_rsi = d['rsi']
     days_since_escape = 0
@@ -149,7 +183,7 @@ def analyze_expert_logic(d):
         score += pts
         log['rsi'] = 'neutral'
 
-    # VIX Logic
+    # 3. VIX Level Logic
     if d['vix'] > 35:
         if d['vix'] < d['vix_prev']:
             pts = 7 if season == "WINTER" else 0
@@ -170,7 +204,7 @@ def analyze_expert_logic(d):
     else:
         log['vix'] = 'none'
 
-    # Bollinger Logic
+    # 4. Bollinger Logic
     if d['price_prev'] < d['bb_lower_prev'] and d['price'] >= d['bb_lower']:
         pts = 5 if season == "WINTER" else 4
         score += pts
@@ -182,7 +216,7 @@ def analyze_expert_logic(d):
     else:
         log['bb'] = 'in'
 
-    # Trend Logic
+    # 5. Trend Logic
     if d['price'] > d['ma20']:
         pts = 3 if season == "WINTER" or season == "SPRING" else 2
         score += pts
@@ -190,7 +224,7 @@ def analyze_expert_logic(d):
     else:
         log['trend'] = 'down'
 
-    # Volume Logic
+    # 6. Volume Logic
     if d['volume'] > d['vol_ma20'] * 1.5:
         pts = 3 if season == "WINTER" or season == "AUTUMN" else 2
         score += pts
@@ -198,7 +232,7 @@ def analyze_expert_logic(d):
     else:
         log['vol'] = 'normal'
 
-    # MACD Logic
+    # 7. MACD Logic
     if d['macd_prev'] < 0 and d['macd'] >= 0:
         pts = 3
         score += pts
@@ -218,14 +252,19 @@ def analyze_expert_logic(d):
 
     return season, score, log
 
-# === [3] 전략 탐색 및 행동 결정 ===
-def determine_action(score, season, data):
+# === [3] 전략 탐색 및 행동 결정 (업그레이드: Backwardation 강제 차단) ===
+def determine_action(score, season, data, log):
     vix_pct_change = ((data['vix'] - data['vix_prev']) / data['vix_prev']) * 100
     TARGET_DELTA = -0.10
     
-    # 1. Panic Condition
+    # [PRIORITY 0] Backwardation Check (System Collapse)
+    if log.get('term') == 'backwardation':
+        return TARGET_DELTA, "⛔ 매매 중단 (System Collapse)", "-", "-", "panic"
+
+    # [PRIORITY 1] Panic Condition (VIX Spike)
     if vix_pct_change > 15.0:
         return TARGET_DELTA, "⛔ 매매 중단 (VIX 급등)", "-", "-", "panic"
+    
     # 2. Strong
     if score >= 12:
         return TARGET_DELTA, "💎 추세 추종 (Strong)", "75%", "300%", "strong"
@@ -286,7 +325,7 @@ def find_best_option(price, iv, target_delta):
     except:
         return None
 
-# === [4] 차트 ===
+# === [4] 차트 (업그레이드: VIX3M 표시) ===
 def create_charts(data):
     hist = data['hist']
     fig = plt.figure(figsize=(10, 16))
@@ -336,12 +375,17 @@ def create_charts(data):
     ax2.grid(True, alpha=0.3)
     plt.setp(ax2.get_xticklabels(), visible=False)
     
-    # VIX
+    # VIX & VIX3M
     ax3 = fig.add_subplot(gs[4], sharex=ax1)
-    ax3.plot(data['vix_hist'].index, data['vix_hist']['Close'], color='purple', label='VIX')
+    ax3.plot(data['vix_hist'].index, data['vix_hist']['Close'], color='purple', label='VIX (Spot)')
+    if data['vix3m_hist'] is not None and not data['vix3m_hist'].empty:
+         # 날짜 인덱스 맞추기 위해 reindex 사용 가능하나 간단히 plot
+         ax3.plot(data['vix3m_hist'].index, data['vix3m_hist']['Close'], color='gray', ls=':', label='VIX3M (Future)')
+    
     ax3.axhline(30, color='red', ls='--')
     ax3.axhline(20, color='green', ls='--')
-    ax3.set_title('VIX', fontsize=12, fontweight='bold')
+    ax3.set_title('Structure of Volatility (VIX vs VIX3M)', fontsize=12, fontweight='bold')
+    ax3.legend(loc='upper right')
     ax3.grid(True, alpha=0.3)
     
     plt.tight_layout()
@@ -349,14 +393,14 @@ def create_charts(data):
 
 # === [메인 화면] ===
 def main():
-    st.title("📊 QQQ Expert Advisory (v18.4)")
-    st.caption(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    st.title("🦅 HK Advisory (Grand Master v20.0)")
+    st.caption(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | System: Institutional Grade")
 
-    with st.spinner('분석 중...'):
+    with st.spinner('시장 구조 및 변동성 정밀 분석 중...'):
         try:
             data = get_market_data()
             season, score, log = analyze_expert_logic(data)
-            target_delta, verdict_text, profit_target, stop_loss, matrix_id = determine_action(score, season, data)
+            target_delta, verdict_text, profit_target, stop_loss, matrix_id = determine_action(score, season, data, log)
             strategy = find_best_option(data['price'], data['iv'], target_delta)
         except Exception as e:
             st.error(f"오류 발생: {e}")
@@ -372,7 +416,7 @@ def main():
         else:
             if current_val == row_state: is_match = True
         
-        if is_match and season == col_season:
+        if is_match and (season == col_season or col_season == 'ALL'):
             return "style='border: 3px solid #FF5722; background-color: #FFF8E1; font-weight: bold; color: #D84315; padding: 8px;'"
         return base
 
@@ -383,6 +427,17 @@ def main():
 
     td_style = "style='border: 1px solid #ddd; padding: 8px; color: black; background-color: white;'"
     th_style = "style='border: 1px solid #ddd; padding: 8px; color: black; background-color: #f2f2f2;'"
+    
+    # Term Structure Color Logic
+    term_val = log.get('term')
+    term_color = "black"
+    term_bg = "white"
+    if term_val == 'contango': 
+        term_color = "green"
+        term_bg = "#e8f5e9"
+    elif term_val == 'backwardation': 
+        term_color = "red"
+        term_bg = "#ffebee"
 
     # 1. Season Matrix
     html_season_list = [
@@ -400,7 +455,9 @@ def main():
     ]
     st.markdown("".join(html_season_list), unsafe_allow_html=True)
 
-    # 2. Scorecard
+    # 2. Scorecard (업그레이드: VIX Term Structure 추가)
+    vix_ratio_disp = f"{log.get('vix_ratio', 0):.2f}"
+    
     html_score_list = [
         "<h3>2. Expert Matrix Scorecard</h3>",
         "<table style='border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 14px; text-align: center;'>",
@@ -409,6 +466,20 @@ def main():
         f"<th {th_style}>☀️</th><th {th_style}>🍂</th><th {th_style}>❄️</th><th {th_style}>🌱</th>",
         f"<th {th_style}>Logic</th>",
         "</tr>",
+        
+        # [NEW] VIX Term Structure Row (Universal)
+        f"<tr><td rowspan='3' {td_style}><b>VIX Term</b><br><span style='font-size:11px; color:blue;'>Ratio: {vix_ratio_disp}</span></td>",
+        f"<td {td_style}><b>Easy Money</b><br>(Contango &lt;0.9)</td>",
+        f"<td colspan='4' {hl_score('term', 'contango', 'ALL')}>+3 (Universal)</td>",
+        f"<td align='left' {td_style}><b>Green Light</b></td></tr>",
+        
+        f"<tr><td {td_style}>Normal<br>(0.9 ~ 1.0)</td>",
+        f"<td colspan='4' {hl_score('term', 'normal', 'ALL')}>0</td>",
+        f"<td align='left' {td_style}>-</td></tr>",
+        
+        f"<tr><td {td_style}><b>Collapse</b><br>(Backwardation &gt;1.0)</td>",
+        f"<td colspan='4' {hl_score('term', 'backwardation', 'ALL')}><b>-10 (Block)</b></td>",
+        f"<td align='left' {td_style}><b style='color:red;'>🚨 붕괴 경보</b></td></tr>",
         
         # RSI
         f"<tr><td rowspan='4' {td_style}>RSI<br><span style='font-size:11px; color:#888; font-weight:normal'>지금 싼가? 비싼가?</span></td>",
@@ -429,7 +500,7 @@ def main():
         f"<td align='left' {td_style}><b>Best Timing</b></td></tr>",
         
         # VIX
-        f"<tr><td rowspan='4' {td_style}>VIX</td>",
+        f"<tr><td rowspan='4' {td_style}>VIX (Level)</td>",
         f"<td {td_style}>안정 (<20)</td>",
         f"<td {hl_score('vix', 'stable', 'SUMMER')}>+2</td><td {hl_score('vix', 'stable', 'AUTUMN')}>0</td><td {hl_score('vix', 'stable', 'WINTER')}>-2</td><td {hl_score('vix', 'stable', 'SPRING')}>+1</td>",
         f"<td align='left' {td_style}>저변동성</td></tr>",
@@ -515,7 +586,7 @@ def main():
         "</tr>",
         
         f"<tr {get_matrix_style(matrix_id, 'panic', '#ffebee')}>",
-        "<td>VIX 급등</td><td>⛔ 매매 중단 (Panic)</td><td>-</td><td>-</td></tr>",
+        "<td>VIX 급등 / 구조 붕괴</td><td>⛔ 매매 중단 (System Collapse)</td><td>-</td><td>-</td></tr>",
         
         f"<tr {get_matrix_style(matrix_id, 'strong', '#dff0d8')}>",
         "<td>12점 이상</td><td>💎 추세 추종 (Strong)</td><td style='color:green;'>+75%</td><td style='color:red;'>-300% (원금 3배)</td></tr>",
@@ -593,10 +664,16 @@ def main():
         ]
         st.markdown("".join(html_manual_list), unsafe_allow_html=True)
     else:
+        # Warning Message Logic
+        if matrix_id == 'panic':
+            reason = "VIX 급등 또는 변동성 구조 붕괴(Backwardation)가 감지되었습니다."
+        else:
+            reason = "현재 점수가 신규 진입에 적합하지 않습니다."
+
         html_warning_list = [
             "<div style='border: 2px solid red; padding: 15px; margin-top: 20px; border-radius: 10px; background-color: #ffebee;'>",
             "<h3 style='color: red; margin-top: 0;'>⛔ 진입 금지 (No Entry)</h3>",
-            "<p style='color: black;'>현재 점수 또는 시장 상황(VIX)이 신규 진입에 적합하지 않습니다.<br>",
+            f"<p style='color: black;'>{reason}<br>",
             "기존 포지션 관리(청산/롤오버)에만 집중하십시오.</p></div>"
         ]
         st.markdown("".join(html_warning_list), unsafe_allow_html=True)
