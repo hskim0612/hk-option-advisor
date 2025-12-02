@@ -480,12 +480,13 @@ def find_best_option(price, iv, target_delta):
     except:
         return None
 
-# === [6] 차트 (8개 서브플롯 - Capitulation 제거) ===
+# === [6] 차트 (8개 서브플롯 - VIX 구조 시각화 강화) ===
 def create_charts(data):
     hist = data['hist']
     
-    # 높이와 행 개수 수정 (9 -> 8)
+    # 높이와 행 개수 설정 (8개)
     fig = plt.figure(figsize=(10, 24))
+    # 높이 비율 조정: Price는 크게, 나머지는 비슷하게
     gs = fig.add_gridspec(8, 1, height_ratios=[2, 0.6, 1, 1, 1, 1, 1, 1])
     
     # 1. Price
@@ -509,30 +510,55 @@ def create_charts(data):
     ax_vol.grid(True, alpha=0.3)
     plt.setp(ax_vol.get_xticklabels(), visible=False)
 
-    # 3. VIX Term Structure
-    ax_ratio = fig.add_subplot(gs[2], sharex=ax1)
+    # 3. VIX Level (Absolute) - 위치 이동 및 레이아웃 조정
+    ax_vix_abs = fig.add_subplot(gs[2], sharex=ax1)
+    ax_vix_abs.plot(data['vix_hist'].index, data['vix_hist']['Close'], color='purple', label='VIX (Spot)')
+    if data['vix3m_hist'] is not None and not data['vix3m_hist'].empty:
+         ax_vix_abs.plot(data['vix3m_hist'].index, data['vix3m_hist']['Close'], color='gray', ls=':', label='VIX3M')
+    
+    ax_vix_abs.axhline(35, color='red', ls='--')
+    ax_vix_abs.axhline(20, color='green', ls='--')
+    ax_vix_abs.set_title('VIX vs VIX3M (Absolute Level)', fontsize=12, fontweight='bold')
+    ax_vix_abs.legend(loc='upper right')
+    ax_vix_abs.grid(True, alpha=0.3)
+    plt.setp(ax_vix_abs.get_xticklabels(), visible=False)
+
+    # 4. VIX Term Structure (Ratio) - [신규] 시각화 강화
+    ax_ratio = fig.add_subplot(gs[3], sharex=ax1)
     term_data = data.get('vix_term_df')
     
     if term_data is not None and not term_data.empty:
+        # Main Ratio Line
         ax_ratio.plot(term_data.index, term_data['Ratio'], color='black', lw=1.2, label='Ratio (VIX/VIX3M)')
-        ax_ratio.axhline(1.0, color='red', ls='--', alpha=0.8, lw=1)
-        ax_ratio.axhline(0.9, color='green', ls='--', alpha=0.8, lw=1)
+        
+        # 1.0 기준선 (Red Dotted)
+        ax_ratio.axhline(1.0, color='red', ls='--', alpha=0.8, lw=1.5, label='Threshold (1.0)')
+        
+        # 1. Danger Zone (Backwardation: Ratio > 1.0) -> Red Background
         ax_ratio.fill_between(term_data.index, term_data['Ratio'], 1.0, 
                          where=(term_data['Ratio'] > 1.0), 
-                         color='red', alpha=0.2, label='Backwardation')
+                         color='red', alpha=0.2, interpolate=True, label='Danger (Back.)')
+        
+        # 2. Safe Zone (Contango: Ratio < 1.0) -> Green Background
+        ax_ratio.fill_between(term_data.index, term_data['Ratio'], 1.0, 
+                         where=(term_data['Ratio'] <= 1.0), 
+                         color='green', alpha=0.15, interpolate=True, label='Safe (Contango)')
+        
+        # 3. Opportunity Zone (Super Contango: Ratio < 0.9) -> Darker Green
         ax_ratio.fill_between(term_data.index, term_data['Ratio'], 0.9, 
                          where=(term_data['Ratio'] < 0.9), 
-                         color='green', alpha=0.2, label='Contango')
-        ax_ratio.legend(loc='upper right')
+                         color='green', alpha=0.3, interpolate=True, label='Super Contango')
+        
+        ax_ratio.legend(loc='upper right', fontsize=8)
     else:
-        ax_ratio.text(0.5, 0.5, "데이터 부족", transform=ax_ratio.transAxes, color='red')
+        ax_ratio.text(0.5, 0.5, "데이터 부족 (Data Insufficient)", transform=ax_ratio.transAxes, ha='center', color='red')
         
     ax_ratio.set_title('VIX Term Structure (Ratio = VIX / VIX3M)', fontsize=12, fontweight='bold')
     ax_ratio.grid(True, alpha=0.3)
     plt.setp(ax_ratio.get_xticklabels(), visible=False)
 
-    # 4. RSI(14)
-    ax_rsi = fig.add_subplot(gs[3], sharex=ax1)
+    # 5. RSI(14)
+    ax_rsi = fig.add_subplot(gs[4], sharex=ax1)
     ax_rsi.plot(hist.index, hist['RSI'], color='purple', label='RSI(14)')
     ax_rsi.axhline(70, color='red', ls='--', alpha=0.7)
     ax_rsi.axhline(30, color='green', ls='--', alpha=0.7)
@@ -543,8 +569,8 @@ def create_charts(data):
     ax_rsi.grid(True, alpha=0.3)
     plt.setp(ax_rsi.get_xticklabels(), visible=False)
 
-    # 5. MACD
-    ax2 = fig.add_subplot(gs[4], sharex=ax1)
+    # 6. MACD
+    ax2 = fig.add_subplot(gs[5], sharex=ax1)
     ax2.plot(hist.index, hist['MACD'], label='MACD', color='blue')
     ax2.plot(hist.index, hist['Signal'], label='Signal', color='orange')
     ax2.bar(hist.index, hist['MACD']-hist['Signal'], color='gray', alpha=0.3)
@@ -553,20 +579,7 @@ def create_charts(data):
     ax2.grid(True, alpha=0.3)
     plt.setp(ax2.get_xticklabels(), visible=False)
     
-    # 6. VIX Level
-    ax3 = fig.add_subplot(gs[5], sharex=ax1)
-    ax3.plot(data['vix_hist'].index, data['vix_hist']['Close'], color='purple', label='VIX (Spot)')
-    if data['vix3m_hist'] is not None and not data['vix3m_hist'].empty:
-         ax3.plot(data['vix3m_hist'].index, data['vix3m_hist']['Close'], color='gray', ls=':', label='VIX3M')
-    
-    ax3.axhline(35, color='red', ls='--')
-    ax3.axhline(20, color='green', ls='--')
-    ax3.set_title('VIX Level (Absolute)', fontsize=12, fontweight='bold')
-    ax3.legend(loc='upper right')
-    ax3.grid(True, alpha=0.3)
-    plt.setp(ax3.get_xticklabels(), visible=False)
-
-    # 7. VIX vs VVIX Divergence
+    # 7. VIX vs VVIX Divergence (Trap Detector)
     ax_div = fig.add_subplot(gs[6], sharex=ax1)
     line1 = ax_div.plot(data['vix_hist'].index, data['vix_hist']['Close'], 
                        color='purple', label='VIX', linewidth=1.5)
@@ -586,7 +599,7 @@ def create_charts(data):
     ax_div.grid(True, alpha=0.3)
     plt.setp(ax_div.get_xticklabels(), visible=False)
 
-    # 8. RSI(2) (수정됨: 색상 변경 및 포인트 강조)
+    # 8. RSI(2) (Short-term Pullback)
     ax_rsi2 = fig.add_subplot(gs[7], sharex=ax1)
     ax_rsi2.plot(hist.index, hist['RSI_2'], color='gray', label='RSI(2)', linewidth=1.2)
     ax_rsi2.axhline(10, color='green', linestyle='--', alpha=0.7)
@@ -597,7 +610,7 @@ def create_charts(data):
     ax_rsi2.fill_between(hist.index, hist['RSI_2'], 90, where=(hist['RSI_2'] > 90),
                         color='red', alpha=0.3, label='Danger')
     
-    # 마지막 시점 빨간색 동그라미 마커 추가
+    # 마지막 시점 빨간색 동그라미 마커
     ax_rsi2.scatter(hist.index[-1], hist['RSI_2'].iloc[-1], color='red', s=50, zorder=5)
 
     ax_rsi2.set_ylim(0, 100)
