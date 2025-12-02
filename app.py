@@ -12,7 +12,7 @@ APP_PASSWORD = "1979"
 
 # === [페이지 기본 설정] ===
 st.set_page_config(
-    page_title="HK 옵션투자자문 (Grand Master v21.2 - Safety First)",
+    page_title="HK 옵션투자자문 (Grand Master v21.3 - MACD Matrix)",
     page_icon="🦅",
     layout="wide"
 )
@@ -67,14 +67,14 @@ def get_market_data():
     hist['MACD'] = exp1 - exp2
     hist['Signal'] = hist['MACD'].ewm(span=9, adjust=False).mean()
     
-    # RSI(14) - 기존
+    # RSI(14)
     delta = hist['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = gain / loss
     hist['RSI'] = 100 - (100 / (1 + rs))
     
-    # [신규] RSI(2) - 단기 눌림목용
+    # RSI(2)
     gain_2 = (delta.where(delta > 0, 0)).rolling(window=2).mean()
     loss_2 = (-delta.where(delta < 0, 0)).rolling(window=2).mean()
     rs_2 = gain_2 / loss_2
@@ -86,7 +86,6 @@ def get_market_data():
     vix_ticker = yf.Ticker("^VIX")
     vix_hist = vix_ticker.history(period="1y")
     
-    # [신규] VVIX 데이터 수집
     vvix_ticker = yf.Ticker("^VVIX")
     vvix_hist = vvix_ticker.history(period="1y")
 
@@ -101,14 +100,12 @@ def get_market_data():
         if not vix3m_hist.empty and not vix_hist.empty:
             vix3m_val = vix3m_hist['Close'].iloc[-1]
             
-            # Timezone 제거 및 날짜 정규화
             df_vix = vix_hist[['Close']].copy()
             df_vix3m = vix3m_hist[['Close']].copy()
             
             df_vix.index = df_vix.index.tz_localize(None).normalize()
             df_vix3m.index = df_vix3m.index.tz_localize(None).normalize()
             
-            # VIX Term Structure 병합
             merged_df = pd.merge(
                 df_vix, 
                 df_vix3m, 
@@ -128,7 +125,6 @@ def get_market_data():
         vix_term_df = None
         print(f"Error fetching VIX/VIX3M: {e}")
     
-    # [신규] VVIX 데이터 정규화 및 병합 (동기화)
     try:
         if not vvix_hist.empty:
             vvix_clean = vvix_hist[['Close']].copy()
@@ -136,7 +132,6 @@ def get_market_data():
     except Exception as e:
         print(f"Error processing VVIX: {e}")
 
-    # 현재 상태값
     curr = hist.iloc[-1]
     prev = hist.iloc[-2]
     curr_vix = vix_hist['Close'].iloc[-1]
@@ -144,7 +139,6 @@ def get_market_data():
     
     vol_pct = (curr['Volume'] / curr['Vol_MA20']) * 100
 
-    # IV (Implied Volatility)
     try:
         dates = qqq.options
         chain = qqq.option_chain(dates[1])
@@ -171,9 +165,6 @@ def get_market_data():
 # === [2] 신규 로직 함수 ===
 
 def detect_capitulation(data, log):
-    """
-    [신규 1] 투매 감지: 2일 연속 공포 구조(Ratio>1.0) + 거래량 폭증(>1.5배)
-    """
     if data['vix_term_df'] is None:
         log['capitulation'] = 'none'
         return 0
@@ -203,9 +194,6 @@ def detect_capitulation(data, log):
     return 0
 
 def detect_vvix_trap(data, log):
-    """
-    [신규 2] VVIX Trap: VIX 안정(횡보) + VVIX 급등
-    """
     try:
         vix_hist = data['vix_hist']['Close']
         if len(vix_hist) < 5: return 0
@@ -227,9 +215,6 @@ def detect_vvix_trap(data, log):
     return 0
 
 def detect_rsi2_dip(data, log):
-    """
-    [신규 3] RSI(2) 눌림목: 과매도(<10) + 구조 안정 + VVIX 하락
-    """
     try:
         rsi2 = data['rsi2']
         ratio = data['vix'] / data['vix3m'] if data['vix3m'] else 1.1
@@ -247,7 +232,7 @@ def detect_rsi2_dip(data, log):
     log['rsi2_dip'] = 'none'
     return 0
 
-# === [3] 전문가 로직 (수정된 Bollinger Logic 적용) ===
+# === [3] 전문가 로직 (MACD 4-Zone Matrix 적용) ===
 def analyze_expert_logic(d):
     if d['price'] > d['ma50'] and d['price'] > d['ma200']: season = "SUMMER"
     elif d['price'] < d['ma50'] and d['price'] > d['ma200']: season = "AUTUMN"
@@ -328,7 +313,7 @@ def analyze_expert_logic(d):
     else:
         log['vix'] = 'none'
 
-    # 4. Bollinger Logic (Z-Score & Risk Managed) - [수정됨]
+    # 4. Bollinger Logic (Z-Score)
     numerator = d['price'] - d['ma20']
     denominator = (d['bb_upper'] - d['ma20']) / 2.0
     
@@ -355,7 +340,7 @@ def analyze_expert_logic(d):
         pts = 2
         score += pts
         log['bb'] = 'dip_buying'
-    else: # z_score <= -1.8
+    else: 
         pts = 1 
         score += pts
         log['bb'] = 'oversold_guard'
@@ -376,24 +361,37 @@ def analyze_expert_logic(d):
     else:
         log['vol'] = 'normal'
 
-    # 7. MACD Logic
-    if d['macd_prev'] < 0 and d['macd'] >= 0:
-        pts = 3
-        score += pts
-        log['macd'] = 'break_up'
-    elif d['macd_prev'] > 0 and d['macd'] <= 0:
-        if season == "WINTER": pts = -8
-        else: pts = -5
-        score += pts
-        log['macd'] = 'break_down'
-    elif d['macd'] > 0:
-        pts = 1
-        score += pts
-        log['macd'] = 'above'
+    # ---------------------------------------------------------
+    # 7. MACD Logic (4-Zone Strategy 적용) [수정됨]
+    # ---------------------------------------------------------
+    macd_val = d['macd']
+    signal_val = d['signal']
+    
+    # [상태 1 & 3] 골든크로스 구간 (MACD > Signal)
+    if macd_val > signal_val:
+        if macd_val >= 0:
+            # [Case 1] 0선 위 + 골든크로스 (상승 가속)
+            pts = 3
+            score += pts
+            log['macd'] = 'zero_up_golden' 
+        else:
+            # [Case 3] 0선 아래 + 골든크로스 (기술적 반등/함정) -> 0점 (Safety First)
+            pts = 0
+            score += pts
+            log['macd'] = 'zero_down_golden'
+
+    # [상태 2 & 4] 데드크로스 구간 (MACD < Signal)
     else:
-        pts = -1
-        score += pts
-        log['macd'] = 'below'
+        if macd_val >= 0:
+            # [Case 2] 0선 위 + 데드크로스 (건전한 조정/눌림목)
+            pts = -3
+            score += pts
+            log['macd'] = 'zero_up_dead'
+        else:
+            # [Case 4] 0선 아래 + 데드크로스 (하락 가속/폭락)
+            pts = -5
+            score += pts
+            log['macd'] = 'zero_down_dead'
 
     # === [신규 항목 점수 누적] ===
     pts_cap = detect_capitulation(d, log)
@@ -480,13 +478,11 @@ def find_best_option(price, iv, target_delta):
     except:
         return None
 
-# === [6] 차트 (8개 서브플롯 - VIX/VVIX Ratio 신규 적용) ===
+# === [6] 차트 (8개 서브플롯) ===
 def create_charts(data):
     hist = data['hist']
     
-    # 높이와 행 개수 설정 (8개)
     fig = plt.figure(figsize=(10, 24))
-    # 높이 비율 조정: Price는 크게, 나머지는 비슷하게
     gs = fig.add_gridspec(8, 1, height_ratios=[2, 0.6, 1, 1, 1, 1, 1, 1])
     
     # 1. Price
@@ -528,13 +524,9 @@ def create_charts(data):
     term_data = data.get('vix_term_df')
     
     if term_data is not None and not term_data.empty:
-        # Main Ratio Line
         ax_ratio.plot(term_data.index, term_data['Ratio'], color='black', lw=1.2, label='Ratio (VIX/VIX3M)')
-        
-        # 1.0 기준선 (Red Dotted)
         ax_ratio.axhline(1.0, color='red', ls='--', alpha=0.8, lw=1.5, label='Threshold (1.0)')
         
-        # Danger/Safe Zones
         ax_ratio.fill_between(term_data.index, term_data['Ratio'], 1.0, 
                          where=(term_data['Ratio'] > 1.0), 
                          color='red', alpha=0.2, interpolate=True, label='Danger (Back.)')
@@ -577,71 +569,48 @@ def create_charts(data):
     ax2.grid(True, alpha=0.3)
     plt.setp(ax2.get_xticklabels(), visible=False)
     
-    # 7. [신규 교체] VVIX / VIX Ratio (Complacency Monitor)
+    # 7. VVIX / VIX Ratio
     ax_ratio_vvix = fig.add_subplot(gs[6], sharex=ax1)
-    
-    # 데이터 처리 및 동기화 (create_charts 내부에서 수행)
     try:
         df_v = data['vix_hist'][['Close']].copy()
         df_vv = data['vvix_hist'][['Close']].copy()
-        
-        # 인덱스 Timezone 제거 및 정규화
         df_v.index = df_v.index.tz_localize(None).normalize()
         df_vv.index = df_vv.index.tz_localize(None).normalize()
         
-        # 병합
         merged_ratio = pd.merge(df_v, df_vv, left_index=True, right_index=True, suffixes=('_VIX', '_VVIX'))
         merged_ratio['Ratio'] = merged_ratio['Close_VVIX'] / merged_ratio['Close_VIX']
         
         if not merged_ratio.empty:
-            # Main Ratio Line
             ax_ratio_vvix.plot(merged_ratio.index, merged_ratio['Ratio'], color='#333333', lw=1.2, label='VVIX/VIX Ratio')
-            
-            # Thresholds
             ax_ratio_vvix.axhline(7.0, color='red', ls=':', alpha=0.5)
             ax_ratio_vvix.axhline(4.0, color='green', ls=':', alpha=0.5)
-            ax_ratio_vvix.axhline(5.5, color='gray', ls='--', alpha=0.5, lw=0.8) # Mean/Neutral
-            
-            # Danger Zone (Complacency) -> Red
+            ax_ratio_vvix.axhline(5.5, color='gray', ls='--', alpha=0.5, lw=0.8)
             ax_ratio_vvix.fill_between(merged_ratio.index, merged_ratio['Ratio'], 7.0, 
-                                    where=(merged_ratio['Ratio'] > 7.0), 
-                                    color='red', alpha=0.2, label='Complacency (Danger)')
-            
-            # Opportunity Zone (Panic) -> Green
+                                    where=(merged_ratio['Ratio'] > 7.0), color='red', alpha=0.2, label='Complacency')
             ax_ratio_vvix.fill_between(merged_ratio.index, merged_ratio['Ratio'], 4.0, 
-                                    where=(merged_ratio['Ratio'] < 4.0), 
-                                    color='green', alpha=0.2, label='Panic (Opportunity)')
-            
+                                    where=(merged_ratio['Ratio'] < 4.0), color='green', alpha=0.2, label='Panic')
             ax_ratio_vvix.legend(loc='upper left', fontsize=8)
         else:
-            ax_ratio_vvix.text(0.5, 0.5, "No Data for Ratio", transform=ax_ratio_vvix.transAxes, ha='center')
-
+            ax_ratio_vvix.text(0.5, 0.5, "No Data", transform=ax_ratio_vvix.transAxes, ha='center')
     except Exception as e:
         ax_ratio_vvix.text(0.5, 0.5, f"Error: {e}", transform=ax_ratio_vvix.transAxes, ha='center', color='red')
 
-    ax_ratio_vvix.set_title('VVIX / VIX Ratio (Market Complacency Monitor)', fontsize=12, fontweight='bold')
+    ax_ratio_vvix.set_title('VVIX / VIX Ratio', fontsize=12, fontweight='bold')
     ax_ratio_vvix.grid(True, alpha=0.3)
     plt.setp(ax_ratio_vvix.get_xticklabels(), visible=False)
 
-    # 8. RSI(2) (Short-term Pullback)
+    # 8. RSI(2)
     ax_rsi2 = fig.add_subplot(gs[7], sharex=ax1)
     ax_rsi2.plot(hist.index, hist['RSI_2'], color='gray', label='RSI(2)', linewidth=1.2)
     ax_rsi2.axhline(10, color='green', linestyle='--', alpha=0.7)
     ax_rsi2.axhline(90, color='red', linestyle='--', alpha=0.7)
-    
-    ax_rsi2.fill_between(hist.index, hist['RSI_2'], 10, where=(hist['RSI_2'] < 10),
-                        color='green', alpha=0.3, label='Buy Zone')
-    ax_rsi2.fill_between(hist.index, hist['RSI_2'], 90, where=(hist['RSI_2'] > 90),
-                        color='red', alpha=0.3, label='Danger')
-    
-    # 마지막 시점 빨간색 동그라미 마커
+    ax_rsi2.fill_between(hist.index, hist['RSI_2'], 10, where=(hist['RSI_2'] < 10), color='green', alpha=0.3, label='Buy Zone')
+    ax_rsi2.fill_between(hist.index, hist['RSI_2'], 90, where=(hist['RSI_2'] > 90), color='red', alpha=0.3, label='Danger')
     ax_rsi2.scatter(hist.index[-1], hist['RSI_2'].iloc[-1], color='red', s=50, zorder=5)
-
     ax_rsi2.set_ylim(0, 100)
     ax_rsi2.set_title('RSI(2) - Short-term Pullback', fontsize=12, fontweight='bold')
     ax_rsi2.legend(loc='upper right')
     ax_rsi2.grid(True, alpha=0.3)
-    # 마지막 차트이므로 X축 라벨 표시
     ax_rsi2.set_xlabel('Date', fontsize=10)
     
     plt.tight_layout()
@@ -649,10 +618,10 @@ def create_charts(data):
 
 # === [메인 화면] ===
 def main():
-    st.title("🦅 HK Advisory (Grand Master v21.2 - Safety First)")
-    st.caption(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Logic: Bollinger Safe Mode")
+    st.title("🦅 HK Advisory (Grand Master v21.3 - Safety First)")
+    st.caption(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Logic: MACD 4-Zone Matrix Applied")
 
-    with st.spinner('시장 구조 및 신규 위험 지표(VVIX) 정밀 분석 중...'):
+    with st.spinner('시장 구조 및 MACD 정밀 분석 중...'):
         try:
             data = get_market_data()
             season, score, log = analyze_expert_logic(data)
@@ -664,7 +633,7 @@ def main():
             st.text(traceback.format_exc())
             return
 
-    # [Sidebar] 시스템 상태 및 실시간 지표
+    # [Sidebar]
     st.sidebar.title("🛠️ 시스템 상태")
     st.sidebar.markdown("---")
     
@@ -727,8 +696,6 @@ def main():
     td_style = "style='border: 1px solid #ddd; padding: 8px; color: black; background-color: white;'"
     th_style = "style='border: 1px solid #ddd; padding: 8px; color: black; background-color: #f2f2f2;'"
     vix_ratio_disp = f"{log.get('vix_ratio', 0):.2f}"
-    
-    # Z-Score display for table
     z_disp = f"{log.get('z_score', 0):.2f}"
 
     # 1. Season Matrix
@@ -747,7 +714,7 @@ def main():
     ]
     st.markdown("".join(html_season_list), unsafe_allow_html=True)
 
-    # 2. Scorecard (확장판)
+    # 2. Scorecard
     html_score_list = [
         "<h3>2. Expert Matrix Scorecard (확장판 v21)</h3>",
         "<table style='border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 14px; text-align: center;'>",
@@ -819,7 +786,6 @@ def main():
         f"<td {hl_score('vix', 'peak_out', 'SUMMER')}>-</td><td {hl_score('vix', 'peak_out', 'AUTUMN')}>-</td><td {hl_score('vix', 'peak_out', 'WINTER')}>+7</td><td {hl_score('vix', 'peak_out', 'SPRING')}>-</td>",
         f"<td align='left' {td_style}><b>Sniper</b></td></tr>",
         
-        # Bollinger Band (Z-Score) Section [수정됨]
         f"<tr><td rowspan='5' {td_style}>BB (Z-Score)<br><span style='font-size:11px; color:blue;'>Z: {z_disp}</span></td>",
         f"<td {td_style} style='color:red;'><b>과열/위험</b><br>(Z &gt; 1.8)</td>",
         f"<td colspan='4' {hl_score('bb', 'overbought_danger', 'ALL')}><b style='color:red;'>-3 (감점)</b></td>",
@@ -849,28 +815,36 @@ def main():
         f"<td {hl_score('vol', 'explode', 'SUMMER')}>+2</td><td {hl_score('vol', 'explode', 'AUTUMN')}>+3</td><td {hl_score('vol', 'explode', 'WINTER')}>+3</td><td {hl_score('vol', 'explode', 'SPRING')}>+2</td>",
         f"<td align='left' {td_style}><b>손바뀜</b></td></tr>",
         
-        f"<tr><td rowspan='4' {td_style}>MACD</td>",
-        f"<td {td_style}>📈 상승 전환<br>(골든크로스)</td>",
-        f"<td {hl_score('macd', 'break_up', 'SUMMER')}>+3</td><td {hl_score('macd', 'break_up', 'AUTUMN')}>+3</td><td {hl_score('macd', 'break_up', 'WINTER')}>+3</td><td {hl_score('macd', 'break_up', 'SPRING')}>+3</td>",
-        f"<td align='left' {td_style}><b>강력 매수</b></td></tr>",
+        # ---------------------------------------------------------
+        # [수정됨] MACD 4-Zone Scorecard
+        # ---------------------------------------------------------
+        f"<tr><td rowspan='4' {td_style}>MACD (4-Zone)</td>",
         
-        f"<tr><td {td_style}>☁️ 상승 추세</td>",
-        f"<td {hl_score('macd', 'above', 'SUMMER')}>+1</td><td {hl_score('macd', 'above', 'AUTUMN')}>+1</td><td {hl_score('macd', 'above', 'WINTER')}>+1</td><td {hl_score('macd', 'above', 'SPRING')}>+1</td>",
-        f"<td align='left' {td_style}>순풍</td></tr>",
+        # 1. 0선 위 + 골든 (Best)
+        f"<td {td_style}>📈 <b>상승 가속</b><br><span style='font-size:11px; color:#888;'>(0선 위+골든)</span></td>",
+        f"<td colspan='4' {hl_score('macd', 'zero_up_golden', 'ALL')}><b style='color:green;'>+3 (Best)</b></td>",
+        f"<td align='left' {td_style}>추세 추종</td></tr>",
         
-        f"<tr><td {td_style}>📉 하락 전환<br>(데드크로스)</td>",
-        f"<td {hl_score('macd', 'break_down', 'SUMMER')}>-5</td><td {hl_score('macd', 'break_down', 'AUTUMN')}>-5</td><td {hl_score('macd', 'break_down', 'WINTER')}><b style='color:red;'>-8</b></td><td {hl_score('macd', 'break_down', 'SPRING')}>-5</td>",
-        f"<td align='left' {td_style}><b>강력 매도</b></td></tr>",
+        # 2. 0선 위 + 데드 (Warning)
+        f"<td {td_style}>📉 <b>건전한 조정</b><br><span style='font-size:11px; color:#888;'>(0선 위+데드)</span></td>",
+        f"<td colspan='4' {hl_score('macd', 'zero_up_dead', 'ALL')}><b style='color:orange;'>-3 (Warning)</b></td>",
+        f"<td align='left' {td_style}>이익 실현</td></tr>",
         
-        f"<tr><td {td_style}>☔ 하락 추세</td>",
-        f"<td {hl_score('macd', 'below', 'SUMMER')}>-1</td><td {hl_score('macd', 'below', 'AUTUMN')}>-1</td><td {hl_score('macd', 'below', 'WINTER')}>-1</td><td {hl_score('macd', 'below', 'SPRING')}>-1</td>",
-        f"<td align='left' {td_style}>역풍</td></tr>",
+        # 3. 0선 아래 + 골든 (Trap) -> Safety First
+        f"<td {td_style}>🎣 <b>함정 회피</b><br><span style='font-size:11px; color:#888;'>(0선 아래+골든)</span></td>",
+        f"<td colspan='4' {hl_score('macd', 'zero_down_golden', 'ALL')}><b style='color:gray;'>0 (Pass)</b></td>",
+        f"<td align='left' {td_style}>Safety First</td></tr>",
+        
+        # 4. 0선 아래 + 데드 (Danger)
+        f"<td {td_style}>☔ <b>하락 가속</b><br><span style='font-size:11px; color:#888;'>(0선 아래+데드)</span></td>",
+        f"<td colspan='4' {hl_score('macd', 'zero_down_dead', 'ALL')}><b style='color:red;'>-5 (Danger)</b></td>",
+        f"<td align='left' {td_style}>폭락 위험</td></tr>",
         
         "</table>"
     ]
     st.markdown("".join(html_score_list), unsafe_allow_html=True)
 
-    # 3. Final Verdict (확장판)
+    # 3. Final Verdict
     def get_matrix_style(current_id, row_id, bg_color):
         if current_id == row_id:
             return f"style='background-color: {bg_color}; border: 3px solid #666; font-weight: bold; color: #333; height: 50px;'"
