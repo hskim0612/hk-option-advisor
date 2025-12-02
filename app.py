@@ -329,11 +329,7 @@ def analyze_expert_logic(d):
         log['vix'] = 'none'
 
     # 4. Bollinger Logic (Z-Score & Risk Managed) - [수정됨]
-    # Z-Score 계산: (현재가 - 중심선) / (상단 - 중심) * 2
-    # 결과: 0=중심, +2.0=상단, -2.0=하단
-    
     numerator = d['price'] - d['ma20']
-    # 표준편차 대용 (밴드폭의 절반 / 2) -> 약식 표준편차
     denominator = (d['bb_upper'] - d['ma20']) / 2.0
     
     if denominator == 0:
@@ -343,34 +339,24 @@ def analyze_expert_logic(d):
         
     log['z_score'] = z_score
 
-    # [수정된 배점 로직 적용]
     if z_score > 1.8:
-        # A. 상단 밴드 위협 (과매수 위험) -> 감점 유지
         pts = -3
         score += pts
         log['bb'] = 'overbought_danger'
-        
     elif 0.5 < z_score <= 1.8:
-        # B. 상승 추세 (건강한 상승)
         pts = 1
         score += pts
         log['bb'] = 'uptrend'
-        
     elif -0.5 <= z_score <= 0.5:
-        # C. 중립 (횡보)
         pts = 0
         score += pts
         log['bb'] = 'neutral'
-        
     elif -1.8 < z_score < -0.5:
-        # D. 저평가 구간 (매수 우위)
         pts = 2
         score += pts
         log['bb'] = 'dip_buying'
-        
     else: # z_score <= -1.8
-        # E. 하단 밴드 위협 (과매도 but 밴드타기 위험) -> 보수적 접근
-        pts = 1 # 기존 +5점에서 +1점으로 대폭 축소 (안전마진)
+        pts = 1 
         score += pts
         log['bb'] = 'oversold_guard'
 
@@ -494,12 +480,13 @@ def find_best_option(price, iv, target_delta):
     except:
         return None
 
-# === [6] 차트 (9개 서브플롯) ===
+# === [6] 차트 (8개 서브플롯 - Capitulation 제거) ===
 def create_charts(data):
     hist = data['hist']
     
-    fig = plt.figure(figsize=(10, 26))
-    gs = fig.add_gridspec(9, 1, height_ratios=[2, 0.6, 1, 1, 1, 1, 1, 1, 1])
+    # 높이와 행 개수 수정 (9 -> 8)
+    fig = plt.figure(figsize=(10, 24))
+    gs = fig.add_gridspec(8, 1, height_ratios=[2, 0.6, 1, 1, 1, 1, 1, 1])
     
     # 1. Price
     ax1 = fig.add_subplot(gs[0])
@@ -599,9 +586,9 @@ def create_charts(data):
     ax_div.grid(True, alpha=0.3)
     plt.setp(ax_div.get_xticklabels(), visible=False)
 
-    # 8. RSI(2)
+    # 8. RSI(2) (수정됨: 색상 변경 및 포인트 강조)
     ax_rsi2 = fig.add_subplot(gs[7], sharex=ax1)
-    ax_rsi2.plot(hist.index, hist['RSI_2'], color='red', label='RSI(2)', linewidth=1.2)
+    ax_rsi2.plot(hist.index, hist['RSI_2'], color='gray', label='RSI(2)', linewidth=1.2)
     ax_rsi2.axhline(10, color='green', linestyle='--', alpha=0.7)
     ax_rsi2.axhline(90, color='red', linestyle='--', alpha=0.7)
     
@@ -610,39 +597,15 @@ def create_charts(data):
     ax_rsi2.fill_between(hist.index, hist['RSI_2'], 90, where=(hist['RSI_2'] > 90),
                         color='red', alpha=0.3, label='Danger')
     
+    # 마지막 시점 빨간색 동그라미 마커 추가
+    ax_rsi2.scatter(hist.index[-1], hist['RSI_2'].iloc[-1], color='red', s=50, zorder=5)
+
     ax_rsi2.set_ylim(0, 100)
     ax_rsi2.set_title('RSI(2) - Short-term Pullback', fontsize=12, fontweight='bold')
     ax_rsi2.legend(loc='upper right')
     ax_rsi2.grid(True, alpha=0.3)
-    plt.setp(ax_rsi2.get_xticklabels(), visible=False)
-
-    # 9. Capitulation Detector
-    ax_cap = fig.add_subplot(gs[8], sharex=ax1)
-    vol_ratio = hist['Volume'] / hist['Vol_MA20']
-    ax_cap.bar(hist.index, vol_ratio, color='gray', alpha=0.5, label='Vol Ratio')
-    ax_cap.axhline(1.5, color='red', linestyle='--', linewidth=1.5, label='Panic Threshold (1.5x)')
-    
-    if term_data is not None:
-        try:
-            ratio_series = term_data['Ratio']
-            for i in range(1, len(hist)):
-                curr_date = hist.index[i]
-                prev_date = hist.index[i-1]
-                
-                if curr_date in ratio_series.index and prev_date in ratio_series.index:
-                    cond_today = (ratio_series.loc[curr_date] > 1.0) and (vol_ratio.iloc[i] > 1.5)
-                    cond_prev = (ratio_series.loc[prev_date] > 1.0) and (vol_ratio.iloc[i-1] > 1.5)
-                    
-                    if cond_today and cond_prev:
-                        ax_cap.axvspan(prev_date, curr_date, color='yellow', alpha=0.4)
-                        ax_cap.text(curr_date, vol_ratio.iloc[i] + 0.2, '💎', fontsize=12, ha='center')
-        except:
-            pass
-
-    ax_cap.set_title('Capitulation Detector', fontsize=12, fontweight='bold')
-    ax_cap.legend(loc='upper right')
-    ax_cap.grid(True, alpha=0.3)
-    ax_cap.set_xlabel('Date', fontsize=10)
+    # 마지막 차트이므로 X축 라벨 표시
+    ax_rsi2.set_xlabel('Date', fontsize=10)
     
     plt.tight_layout()
     return fig
