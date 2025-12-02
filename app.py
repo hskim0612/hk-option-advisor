@@ -12,7 +12,7 @@ APP_PASSWORD = "1979"
 
 # === [페이지 기본 설정] ===
 st.set_page_config(
-    page_title="HK 옵션투자자문 (Grand Master v21.3 - MACD Matrix)",
+    page_title="HK 옵션투자자문 (Grand Master v22.1 - Hybrid Strategy)",
     page_icon="🦅",
     layout="wide"
 )
@@ -361,9 +361,7 @@ def analyze_expert_logic(d):
     else:
         log['vol'] = 'normal'
 
-    # ---------------------------------------------------------
     # 7. MACD Logic (4-Zone Strategy 적용)
-    # ---------------------------------------------------------
     macd_val = d['macd']
     signal_val = d['signal']
     
@@ -399,38 +397,86 @@ def analyze_expert_logic(d):
 
     return season, score, log
 
-# === [4] 행동 결정 ===
+# === [4] 행동 결정 (수정됨: PCS vs CDS 분기) ===
 def determine_action(score, season, data, log):
     vix_pct_change = ((data['vix'] - data['vix_prev']) / data['vix_prev']) * 100
-    TARGET_DELTA = -0.10
+    current_vix = data['vix']
     
+    # 1. Panic Check
     if log.get('term') == 'backwardation':
-        return TARGET_DELTA, "⛔ 매매 중단 (System Collapse)", "-", "-", "panic"
-
+        return None, "⛔ 매매 중단 (System Collapse)", "-", "-", "panic", "-", "-"
     if vix_pct_change > 15.0:
-        return TARGET_DELTA, "⛔ 매매 중단 (VIX 급등)", "-", "-", "panic"
-    
+        return None, "⛔ 매매 중단 (VIX 급등)", "-", "-", "panic", "-", "-"
     if log.get('vvix_trap') == 'detected':
-        return TARGET_DELTA, "⛔ 매매 중단 (VVIX Trap)", "-", "-", "panic"
+        return None, "⛔ 매매 중단 (VVIX Trap)", "-", "-", "panic", "-", "-"
     
+    # 2. Score Grade & Strategy Selection
+    verdict_text = ""
+    profit_target = ""
+    stop_loss = ""
+    matrix_id = ""
+    target_delta = None
+    
+    # 등급 결정
     if score >= 20:
-        return TARGET_DELTA, "💎💎 극강 추세 (Super Strong)", "100%", "300%", "super_strong"
+        verdict_text = "💎💎 극강 추세 (Super Strong)"
+        matrix_id = "super_strong"
+        profit_target = "100%+"
+        stop_loss = "-300%"
     elif score >= 12:
-        return TARGET_DELTA, "💎 추세 추종 (Strong)", "75%", "300%", "strong"
+        verdict_text = "💎 추세 추종 (Strong)"
+        matrix_id = "strong"
+        profit_target = "75%"
+        stop_loss = "-300%"
     elif 8 <= score < 12:
-        return TARGET_DELTA, "✅ 표준 대응 (Standard)", "50%", "200%", "standard"
+        verdict_text = "✅ 표준 대응 (Standard)"
+        matrix_id = "standard"
+        profit_target = "50%"
+        stop_loss = "-200%"
     elif 5 <= score < 8:
-        return TARGET_DELTA, "⚠️ 속전 속결 (Hit & Run)", "30%", "150%", "weak"
+        verdict_text = "⚠️ 속전 속결 (Hit & Run)"
+        matrix_id = "weak"
+        profit_target = "30%"
+        stop_loss = "-150%"
     else:
-        return None, "🛡️ 진입 보류", "-", "-", "no_entry"
+        verdict_text = "🛡️ 진입 보류"
+        matrix_id = "no_entry"
+        return None, verdict_text, "-", "-", matrix_id, "-", "-"
 
-# === [5] 옵션 찾기 ===
+    # 3. Strategy Logic (PCS vs CDS)
+    # 전문가 로직:
+    # A. Call Debit Spread (CDS): VIX < 18 (저변동성) AND Score >= 12 (강한 추세)
+    # B. Put Credit Spread (PCS): 그 외 (VIX >= 18 OR Score < 12)
+    
+    strategy_type = ""
+    strategy_basis = ""
+
+    if current_vix < 18.0 and score >= 12:
+        strategy_type = "CDS"
+        strategy_basis = f"VIX {current_vix:.1f} (저변동성) + 점수 {score} (강세) 👉 방향성 베팅(가성비)"
+        target_delta = 0.55 # CDS는 보통 ATM 근처 매수 (Delta ~0.50-0.60)
+    else:
+        strategy_type = "PCS"
+        if current_vix >= 18.0:
+            strategy_basis = f"VIX {current_vix:.1f} (고변동성) 👉 프리미엄 매도 유리"
+        else:
+            strategy_basis = f"점수 {score} (중립/완만) 👉 시간가치(Theta) 확보 유리"
+        target_delta = -0.10 # PCS는 OTM Put 매도 (Delta -0.10 ~ -0.15)
+
+    return target_delta, verdict_text, profit_target, stop_loss, matrix_id, strategy_type, strategy_basis
+
+# === [5] 옵션 찾기 (수정됨: CDS/PCS 구분) ===
 def calculate_put_delta(S, K, T, r, sigma):
     if T <= 0 or sigma <= 0: return -0.5
     d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
     return norm.cdf(d1) - 1
 
-def find_best_option(price, iv, target_delta):
+def calculate_call_delta(S, K, T, r, sigma):
+    if T <= 0 or sigma <= 0: return 0.5
+    d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
+    return norm.cdf(d1)
+
+def find_best_option(price, iv, target_delta, strategy_type):
     if target_delta is None: return None
     TARGET_DTE_MIN = 45
     SPREAD_WIDTH = 5
@@ -455,21 +501,56 @@ def find_best_option(price, iv, target_delta):
         min_diff = 1.0
         found_delta = 0
         
-        for strike in range(int(price * 0.5), int(price)):
-            d = calculate_put_delta(price, strike, T, r, iv)
-            diff = abs(d - target_delta)
-            if diff < min_diff:
-                min_diff = diff
-                best_strike = strike
-                found_delta = d
-                
-        return {
-            'expiry': expiry, 'dte': dte,
-            'short': best_strike, 'long': best_strike - SPREAD_WIDTH,
-            'delta': found_delta,
-            'width': SPREAD_WIDTH
-        }
-    except:
+        # CDS (Call Debit) vs PCS (Put Credit)
+        if strategy_type == "CDS":
+            # CDS: Long Call (Target Delta ~0.55) / Short Call (Higher)
+            # 검색 범위: 현재가 주변 (ATM)
+            start_k = int(price * 0.9)
+            end_k = int(price * 1.1)
+            
+            for strike in range(start_k, end_k):
+                d = calculate_call_delta(price, strike, T, r, iv)
+                diff = abs(d - target_delta)
+                if diff < min_diff:
+                    min_diff = diff
+                    best_strike = strike
+                    found_delta = d
+            
+            long_strike = best_strike
+            short_strike = best_strike + SPREAD_WIDTH
+            return {
+                'type': 'CDS',
+                'expiry': expiry, 'dte': dte,
+                'long': long_strike, 'short': short_strike,
+                'delta': found_delta,
+                'width': SPREAD_WIDTH
+            }
+            
+        else: # PCS
+            # PCS: Short Put (Target Delta ~-0.10) / Long Put (Lower)
+            start_k = int(price * 0.5)
+            end_k = int(price)
+            
+            for strike in range(start_k, end_k):
+                d = calculate_put_delta(price, strike, T, r, iv)
+                diff = abs(d - target_delta)
+                if diff < min_diff:
+                    min_diff = diff
+                    best_strike = strike
+                    found_delta = d
+            
+            short_strike = best_strike
+            long_strike = best_strike - SPREAD_WIDTH
+            return {
+                'type': 'PCS',
+                'expiry': expiry, 'dte': dte,
+                'short': short_strike, 'long': long_strike,
+                'delta': found_delta,
+                'width': SPREAD_WIDTH
+            }
+
+    except Exception as e:
+        print(f"Option Search Error: {e}")
         return None
 
 # === [6] 차트 (8개 서브플롯) ===
@@ -612,15 +693,17 @@ def create_charts(data):
 
 # === [메인 화면] ===
 def main():
-    st.title("🦅 HK Advisory (Grand Master v21.3 - Safety First)")
-    st.caption(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Logic: MACD 4-Zone Matrix Applied")
+    st.title("🦅 HK Advisory (Grand Master v22.1 - Safety First)")
+    st.caption(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Logic: MACD 4-Zone & Expert Strategy Selector")
 
-    with st.spinner('시장 구조 및 MACD 정밀 분석 중...'):
+    with st.spinner('시장 구조 분석 및 전략 최적화 중...'):
         try:
             data = get_market_data()
             season, score, log = analyze_expert_logic(data)
-            target_delta, verdict_text, profit_target, stop_loss, matrix_id = determine_action(score, season, data, log)
-            strategy = find_best_option(data['price'], data['iv'], target_delta)
+            # return 값 추가됨 (strategy_type, strategy_basis)
+            target_delta, verdict_text, profit_target, stop_loss, matrix_id, strat_type, strat_basis = determine_action(score, season, data, log)
+            # find_best_option에 strat_type 전달
+            strategy = find_best_option(data['price'], data['iv'], target_delta, strat_type)
         except Exception as e:
             st.error(f"오류 발생: {e}")
             import traceback
@@ -667,6 +750,8 @@ def main():
     st.sidebar.markdown("---")
     st.sidebar.subheader(f"📊 총점: {score}점")
     st.sidebar.markdown(f"**판정:** {verdict_text}")
+    if strat_type:
+        st.sidebar.info(f"전략: {strat_type}")
 
     # 스타일 헬퍼
     def hl_score(category, row_state, col_season):
@@ -708,27 +793,25 @@ def main():
     ]
     st.markdown("".join(html_season_list), unsafe_allow_html=True)
 
-    # 2. Scorecard (모바일 최적화: Logic 컬럼 제거 및 폰트 축소)
+    # 2. Scorecard
     html_score_list = [
         "<h3>2. Expert Matrix (Mobile Ver.)</h3>",
-        # [스타일 수정] font-size: 12px, padding: 4px
         "<table style='border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 12px; text-align: center;'>",
         "<tr>",
         f"<th {th_style}>지표</th><th {th_style}>상태</th>",
         f"<th {th_style}>☀️</th><th {th_style}>🍂</th><th {th_style}>❄️</th><th {th_style}>🌱</th>",
-        # Logic 컬럼 헤더 제거
         "</tr>",
         
         # 1. VIX Term
         f"<tr><td rowspan='3' {td_style}><b>VIX Term</b><br><span style='font-size:10px; color:blue;'>Ratio:{vix_ratio_disp}</span></td>",
         f"<td {td_style}><b>Easy</b><br>(&lt;0.9)</td>",
-        f"<td colspan='4' {hl_score('term', 'contango', 'ALL')}>+3</td></tr>", # Logic 제거
+        f"<td colspan='4' {hl_score('term', 'contango', 'ALL')}>+3</td></tr>",
         
         f"<tr><td {td_style}>Normal<br>(0.9~1)</td>",
-        f"<td colspan='4' {hl_score('term', 'normal', 'ALL')}>0</td></tr>", # Logic 제거
+        f"<td colspan='4' {hl_score('term', 'normal', 'ALL')}>0</td></tr>",
         
         f"<tr><td {td_style}><b>붕괴</b><br>(&gt;1.0)</td>",
-        f"<td colspan='4' {hl_score('term', 'backwardation', 'ALL')}><b>-10</b></td></tr>", # Logic 제거
+        f"<td colspan='4' {hl_score('term', 'backwardation', 'ALL')}><b>-10</b></td></tr>",
         
         # 2. Capitulation
         f"<tr><td {td_style}><b>투매</b></td>",
@@ -820,15 +903,24 @@ def main():
     ]
     st.markdown("".join(html_score_list), unsafe_allow_html=True)
 
-    # 3. Final Verdict
+    # 3. Final Verdict (수정됨: 색상 변경 및 전략 로직 추가)
     def get_matrix_style(current_id, row_id, bg_color):
         if current_id == row_id:
             return f"style='background-color: {bg_color}; border: 3px solid #666; font-weight: bold; color: #333; height: 50px;'"
         else:
             return "style='background-color: white; border: 1px solid #eee; color: #999;'"
+            
+    strat_display = f"""
+    <div style='background-color:#f1f8e9; padding:15px; border-left:5px solid #4caf50; margin-bottom:15px;'>
+        <div style='font-size:18px; font-weight:bold; color:#2e7d32;'>🔔 추천 전략: {strat_type if strat_type else '-'}</div>
+        <div style='font-size:14px; color:#555; margin-top:5px;'>💡 <b>선택 근거:</b> {strat_basis if strat_basis else '-'}</div>
+    </div>
+    """
 
     html_verdict_list = [
-        f"<h3>3. Final Verdict: <span style='color:blue;'>{score}점</span> - Dynamic Exit Matrix</h3>",
+        # 점수 색상 Blue -> Black 변경
+        f"<h3>3. Final Verdict: <span style='color:black;'>{score}점</span> - Dynamic Exit Matrix</h3>",
+        strat_display, # 전략 추천 박스 추가
         "<div style='border: 2px solid #ccc; border-radius: 10px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1);'>",
         "<table style='border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; text-align: center;'>",
         f"<tr style='background-color: #333; color: white;'>",
@@ -867,6 +959,13 @@ def main():
 
     # 4. Manual / Warning
     if strategy and matrix_id != 'no_entry' and matrix_id != 'panic':
+        # 전략 타입에 따라 표시 내용 변경
+        pos_desc = ""
+        if strategy['type'] == 'CDS':
+            pos_desc = f"QQQ Call Debit Spread (Bull Call)<br>• <b>Long Call:</b> Strike ${strategy['long']}<br>• <b>Short Call:</b> Strike ${strategy['short']}"
+        else:
+            pos_desc = f"QQQ Put Credit Spread (Bull Put)<br>• <b>Short Put:</b> Strike ${strategy['short']}<br>• <b>Long Put:</b> Strike ${strategy['long']}"
+        
         html_manual_list = [
             "<div style='border: 2px solid #2196F3; padding: 15px; margin-top: 20px; border-radius: 10px; background-color: #ffffff; color: black;'>",
             "<h3 style='color: #2196F3; margin-top: 0;'>👮‍♂️ 주문 상세 매뉴얼 (Action Plan)</h3>",
@@ -881,8 +980,8 @@ def main():
             
             "<div style='background-color: #f9f9f9; padding: 10px; border-radius: 5px; font-size: 14px;'>",
             f"<b>✅ 현재 포지션 목표 (Spec):</b><br>",
-            f"• <b>종목:</b> QQQ Put Credit Spread (만기 {strategy['expiry']}, DTE {strategy['dte']}일)<br>",
-            f"• <b>Strike:</b> Short ${strategy['short']} / Long ${strategy['long']} (Width ${strategy['width']})<br>",
+            f"• <b>전략:</b> {pos_desc} (Width ${strategy['width']})<br>",
+            f"• <b>만기:</b> {strategy['expiry']} (DTE {strategy['dte']}일)<br>",
             "<hr style='margin: 8px 0; border: 0; border-top: 1px solid #ddd;'>",
             f"• <b>익절 (Target):</b> 진입가 대비 <b style='color:green;'>{profit_target}</b> 도달 시<br>",
             f"• <b>손절 (Stop):</b> 진입가 대비 <b style='color:red;'>{stop_loss}</b> 도달 시 (즉시 청산)",
