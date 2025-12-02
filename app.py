@@ -919,7 +919,7 @@ def main():
 
     html_verdict_list = [
         # 점수 색상 Blue -> Black 변경
-        f"<h3>3. Final Verdict: <span style='color:black;'>{score}점</span> - Dynamic Exit Matrix</h3>",
+        f"<h3>3. Final Verdict: <span style='color:white;'>{score}점</span> - Dynamic Exit Matrix</h3>",
         strat_display, # 전략 추천 박스 추가
         "<div style='border: 2px solid #ccc; border-radius: 10px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1);'>",
         "<table style='border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; text-align: center;'>",
@@ -1008,3 +1008,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
