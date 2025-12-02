@@ -12,7 +12,7 @@ APP_PASSWORD = "1979"
 
 # === [페이지 기본 설정] ===
 st.set_page_config(
-    page_title="HK 옵션투자자문 (Grand Master v21.1 - Safety First)",
+    page_title="HK 옵션투자자문 (Grand Master v21.2 - Safety First)",
     page_icon="🦅",
     layout="wide"
 )
@@ -480,7 +480,7 @@ def find_best_option(price, iv, target_delta):
     except:
         return None
 
-# === [6] 차트 (8개 서브플롯 - VIX 구조 시각화 강화) ===
+# === [6] 차트 (8개 서브플롯 - VIX/VVIX Ratio 신규 적용) ===
 def create_charts(data):
     hist = data['hist']
     
@@ -510,7 +510,7 @@ def create_charts(data):
     ax_vol.grid(True, alpha=0.3)
     plt.setp(ax_vol.get_xticklabels(), visible=False)
 
-    # 3. VIX Level (Absolute) - 위치 이동 및 레이아웃 조정
+    # 3. VIX Level (Absolute)
     ax_vix_abs = fig.add_subplot(gs[2], sharex=ax1)
     ax_vix_abs.plot(data['vix_hist'].index, data['vix_hist']['Close'], color='purple', label='VIX (Spot)')
     if data['vix3m_hist'] is not None and not data['vix3m_hist'].empty:
@@ -523,7 +523,7 @@ def create_charts(data):
     ax_vix_abs.grid(True, alpha=0.3)
     plt.setp(ax_vix_abs.get_xticklabels(), visible=False)
 
-    # 4. VIX Term Structure (Ratio) - [신규] 시각화 강화
+    # 4. VIX Term Structure (Ratio)
     ax_ratio = fig.add_subplot(gs[3], sharex=ax1)
     term_data = data.get('vix_term_df')
     
@@ -534,17 +534,15 @@ def create_charts(data):
         # 1.0 기준선 (Red Dotted)
         ax_ratio.axhline(1.0, color='red', ls='--', alpha=0.8, lw=1.5, label='Threshold (1.0)')
         
-        # 1. Danger Zone (Backwardation: Ratio > 1.0) -> Red Background
+        # Danger/Safe Zones
         ax_ratio.fill_between(term_data.index, term_data['Ratio'], 1.0, 
                          where=(term_data['Ratio'] > 1.0), 
                          color='red', alpha=0.2, interpolate=True, label='Danger (Back.)')
         
-        # 2. Safe Zone (Contango: Ratio < 1.0) -> Green Background
         ax_ratio.fill_between(term_data.index, term_data['Ratio'], 1.0, 
                          where=(term_data['Ratio'] <= 1.0), 
                          color='green', alpha=0.15, interpolate=True, label='Safe (Contango)')
         
-        # 3. Opportunity Zone (Super Contango: Ratio < 0.9) -> Darker Green
         ax_ratio.fill_between(term_data.index, term_data['Ratio'], 0.9, 
                          where=(term_data['Ratio'] < 0.9), 
                          color='green', alpha=0.3, interpolate=True, label='Super Contango')
@@ -579,25 +577,51 @@ def create_charts(data):
     ax2.grid(True, alpha=0.3)
     plt.setp(ax2.get_xticklabels(), visible=False)
     
-    # 7. VIX vs VVIX Divergence (Trap Detector)
-    ax_div = fig.add_subplot(gs[6], sharex=ax1)
-    line1 = ax_div.plot(data['vix_hist'].index, data['vix_hist']['Close'], 
-                       color='purple', label='VIX', linewidth=1.5)
-    ax_div.set_ylabel('VIX', color='purple')
-    ax_div.tick_params(axis='y', labelcolor='purple')
+    # 7. [신규 교체] VVIX / VIX Ratio (Complacency Monitor)
+    ax_ratio_vvix = fig.add_subplot(gs[6], sharex=ax1)
     
-    ax_vvix = ax_div.twinx()
-    line2 = ax_vvix.plot(data['vvix_hist'].index, data['vvix_hist']['Close'], 
-                        color='orange', linestyle='--', label='VVIX', linewidth=1.2)
-    ax_vvix.set_ylabel('VVIX', color='orange')
-    ax_vvix.tick_params(axis='y', labelcolor='orange')
+    # 데이터 처리 및 동기화 (create_charts 내부에서 수행)
+    try:
+        df_v = data['vix_hist'][['Close']].copy()
+        df_vv = data['vvix_hist'][['Close']].copy()
+        
+        # 인덱스 Timezone 제거 및 정규화
+        df_v.index = df_v.index.tz_localize(None).normalize()
+        df_vv.index = df_vv.index.tz_localize(None).normalize()
+        
+        # 병합
+        merged_ratio = pd.merge(df_v, df_vv, left_index=True, right_index=True, suffixes=('_VIX', '_VVIX'))
+        merged_ratio['Ratio'] = merged_ratio['Close_VVIX'] / merged_ratio['Close_VIX']
+        
+        if not merged_ratio.empty:
+            # Main Ratio Line
+            ax_ratio_vvix.plot(merged_ratio.index, merged_ratio['Ratio'], color='#333333', lw=1.2, label='VVIX/VIX Ratio')
+            
+            # Thresholds
+            ax_ratio_vvix.axhline(7.0, color='red', ls=':', alpha=0.5)
+            ax_ratio_vvix.axhline(4.0, color='green', ls=':', alpha=0.5)
+            ax_ratio_vvix.axhline(5.5, color='gray', ls='--', alpha=0.5, lw=0.8) # Mean/Neutral
+            
+            # Danger Zone (Complacency) -> Red
+            ax_ratio_vvix.fill_between(merged_ratio.index, merged_ratio['Ratio'], 7.0, 
+                                    where=(merged_ratio['Ratio'] > 7.0), 
+                                    color='red', alpha=0.2, label='Complacency (Danger)')
+            
+            # Opportunity Zone (Panic) -> Green
+            ax_ratio_vvix.fill_between(merged_ratio.index, merged_ratio['Ratio'], 4.0, 
+                                    where=(merged_ratio['Ratio'] < 4.0), 
+                                    color='green', alpha=0.2, label='Panic (Opportunity)')
+            
+            ax_ratio_vvix.legend(loc='upper left', fontsize=8)
+        else:
+            ax_ratio_vvix.text(0.5, 0.5, "No Data for Ratio", transform=ax_ratio_vvix.transAxes, ha='center')
 
-    lines = line1 + line2
-    labels = [l.get_label() for l in lines]
-    ax_div.legend(lines, labels, loc='upper left')
-    ax_div.set_title('VIX vs VVIX Divergence (Trap Detector)', fontsize=12, fontweight='bold')
-    ax_div.grid(True, alpha=0.3)
-    plt.setp(ax_div.get_xticklabels(), visible=False)
+    except Exception as e:
+        ax_ratio_vvix.text(0.5, 0.5, f"Error: {e}", transform=ax_ratio_vvix.transAxes, ha='center', color='red')
+
+    ax_ratio_vvix.set_title('VVIX / VIX Ratio (Market Complacency Monitor)', fontsize=12, fontweight='bold')
+    ax_ratio_vvix.grid(True, alpha=0.3)
+    plt.setp(ax_ratio_vvix.get_xticklabels(), visible=False)
 
     # 8. RSI(2) (Short-term Pullback)
     ax_rsi2 = fig.add_subplot(gs[7], sharex=ax1)
@@ -625,7 +649,7 @@ def create_charts(data):
 
 # === [메인 화면] ===
 def main():
-    st.title("🦅 HK Advisory (Grand Master v21.1 - Safety First)")
+    st.title("🦅 HK Advisory (Grand Master v21.2 - Safety First)")
     st.caption(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Logic: Bollinger Safe Mode")
 
     with st.spinner('시장 구조 및 신규 위험 지표(VVIX) 정밀 분석 중...'):
