@@ -553,12 +553,11 @@ def find_best_option(price, iv, target_delta, strategy_type):
         print(f"Option Search Error: {e}")
         return None
 
-# === [6] 차트 (8개 서브플롯) - 수정됨: 4계절 배경 적용 ===
+# === [6] 차트 (8개 서브플롯) - 수정됨: 4계절 배경 모든 서브플롯 적용 ===
 def create_charts(data):
     hist = data['hist'].copy()  # 원본 데이터 보호를 위해 복사
     
-    # === [배경색 로직 추가] 4계절 계산 ===
-    # 시즌별 조건 정의 (벡터화 연산)
+    # === [배경색 로직] 4계절 계산 ===
     cond_summer = (hist['Close'] > hist['MA50']) & (hist['Close'] > hist['MA200'])
     cond_autumn = (hist['Close'] < hist['MA50']) & (hist['Close'] > hist['MA200'])
     cond_winter = (hist['Close'] < hist['MA50']) & (hist['Close'] < hist['MA200'])
@@ -582,19 +581,10 @@ def create_charts(data):
     fig = plt.figure(figsize=(10, 24))
     gs = fig.add_gridspec(8, 1, height_ratios=[2, 0.6, 1, 1, 1, 1, 1, 1])
     
-    # 1. Price Chart with Season Background
+    # 1. Price Chart
     ax1 = fig.add_subplot(gs[0])
     
-    # 배경색 칠하기 (연속된 구간 찾기)
-    hist['group'] = (hist['Season'] != hist['Season'].shift()).cumsum()
-    
-    for _, group_data in hist.groupby('group'):
-        season = group_data['Season'].iloc[0]
-        start_date = group_data.index[0]
-        end_date = group_data.index[-1]
-        ax1.axvspan(start_date, end_date, color=season_colors[season], alpha=0.6, zorder=0)
-
-    # 기존 라인 플롯 (zorder를 높임)
+    # 기존 라인 플롯 (zorder 설정 유지)
     ax1.plot(hist.index, hist['Close'], label='QQQ', color='black', alpha=0.9, zorder=2)
     ax1.plot(hist.index, hist['MA20'], label='20MA', color='green', ls='--', lw=1, zorder=2)
     ax1.plot(hist.index, hist['MA50'], label='50MA', color='blue', ls='-', lw=1.5, zorder=2)
@@ -609,23 +599,23 @@ def create_charts(data):
     # 2. Volume
     ax_vol = fig.add_subplot(gs[1], sharex=ax1)
     colors = ['red' if c < o else 'green' for c, o in zip(hist['Close'], hist['Open'])]
-    ax_vol.bar(hist.index, hist['Volume'], color=colors, alpha=0.5)
-    ax_vol.plot(hist.index, hist['Vol_MA20'], color='black', lw=1)
+    ax_vol.bar(hist.index, hist['Volume'], color=colors, alpha=0.5, zorder=2)
+    ax_vol.plot(hist.index, hist['Vol_MA20'], color='black', lw=1, zorder=2)
     ax_vol.set_title(f"Volume ({data['vol_pct']:.1f}%)", fontsize=10, fontweight='bold')
-    ax_vol.grid(True, alpha=0.3)
+    ax_vol.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_vol.get_xticklabels(), visible=False)
 
     # 3. VIX Level (Absolute)
     ax_vix_abs = fig.add_subplot(gs[2], sharex=ax1)
-    ax_vix_abs.plot(data['vix_hist'].index, data['vix_hist']['Close'], color='purple', label='VIX (Spot)')
+    ax_vix_abs.plot(data['vix_hist'].index, data['vix_hist']['Close'], color='purple', label='VIX (Spot)', zorder=2)
     if data['vix3m_hist'] is not None and not data['vix3m_hist'].empty:
-         ax_vix_abs.plot(data['vix3m_hist'].index, data['vix3m_hist']['Close'], color='gray', ls=':', label='VIX3M')
+         ax_vix_abs.plot(data['vix3m_hist'].index, data['vix3m_hist']['Close'], color='gray', ls=':', label='VIX3M', zorder=2)
     
-    ax_vix_abs.axhline(35, color='red', ls='--')
-    ax_vix_abs.axhline(20, color='green', ls='--')
+    ax_vix_abs.axhline(35, color='red', ls='--', zorder=2)
+    ax_vix_abs.axhline(20, color='green', ls='--', zorder=2)
     ax_vix_abs.set_title('VIX vs VIX3M (Absolute Level)', fontsize=12, fontweight='bold')
     ax_vix_abs.legend(loc='upper right')
-    ax_vix_abs.grid(True, alpha=0.3)
+    ax_vix_abs.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_vix_abs.get_xticklabels(), visible=False)
 
     # 4. VIX Term Structure (Ratio)
@@ -633,49 +623,49 @@ def create_charts(data):
     term_data = data.get('vix_term_df')
     
     if term_data is not None and not term_data.empty:
-        ax_ratio.plot(term_data.index, term_data['Ratio'], color='black', lw=1.2, label='Ratio (VIX/VIX3M)')
-        ax_ratio.axhline(1.0, color='red', ls='--', alpha=0.8, lw=1.5, label='Threshold (1.0)')
+        ax_ratio.plot(term_data.index, term_data['Ratio'], color='black', lw=1.2, label='Ratio (VIX/VIX3M)', zorder=2)
+        ax_ratio.axhline(1.0, color='red', ls='--', alpha=0.8, lw=1.5, label='Threshold (1.0)', zorder=2)
         
         ax_ratio.fill_between(term_data.index, term_data['Ratio'], 1.0, 
                              where=(term_data['Ratio'] > 1.0), 
-                             color='red', alpha=0.2, interpolate=True, label='Danger (Back.)')
+                             color='red', alpha=0.2, interpolate=True, label='Danger (Back.)', zorder=1)
         
         ax_ratio.fill_between(term_data.index, term_data['Ratio'], 1.0, 
                              where=(term_data['Ratio'] <= 1.0), 
-                             color='green', alpha=0.15, interpolate=True, label='Safe (Contango)')
+                             color='green', alpha=0.15, interpolate=True, label='Safe (Contango)', zorder=1)
         
         ax_ratio.fill_between(term_data.index, term_data['Ratio'], 0.9, 
                              where=(term_data['Ratio'] < 0.9), 
-                             color='green', alpha=0.3, interpolate=True, label='Super Contango')
+                             color='green', alpha=0.3, interpolate=True, label='Super Contango', zorder=1)
         
         ax_ratio.legend(loc='upper right', fontsize=8)
     else:
-        ax_ratio.text(0.5, 0.5, "데이터 부족 (Data Insufficient)", transform=ax_ratio.transAxes, ha='center', color='red')
+        ax_ratio.text(0.5, 0.5, "데이터 부족 (Data Insufficient)", transform=ax_ratio.transAxes, ha='center', color='red', zorder=2)
         
     ax_ratio.set_title('VIX Term Structure (Ratio = VIX / VIX3M)', fontsize=12, fontweight='bold')
-    ax_ratio.grid(True, alpha=0.3)
+    ax_ratio.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_ratio.get_xticklabels(), visible=False)
 
     # 5. RSI(14)
     ax_rsi = fig.add_subplot(gs[4], sharex=ax1)
-    ax_rsi.plot(hist.index, hist['RSI'], color='purple', label='RSI(14)')
-    ax_rsi.axhline(70, color='red', ls='--', alpha=0.7)
-    ax_rsi.axhline(30, color='green', ls='--', alpha=0.7)
-    ax_rsi.fill_between(hist.index, hist['RSI'], 70, where=(hist['RSI'] >= 70), color='red', alpha=0.3)
-    ax_rsi.fill_between(hist.index, hist['RSI'], 30, where=(hist['RSI'] <= 30), color='green', alpha=0.3)
+    ax_rsi.plot(hist.index, hist['RSI'], color='purple', label='RSI(14)', zorder=2)
+    ax_rsi.axhline(70, color='red', ls='--', alpha=0.7, zorder=2)
+    ax_rsi.axhline(30, color='green', ls='--', alpha=0.7, zorder=2)
+    ax_rsi.fill_between(hist.index, hist['RSI'], 70, where=(hist['RSI'] >= 70), color='red', alpha=0.3, zorder=1)
+    ax_rsi.fill_between(hist.index, hist['RSI'], 30, where=(hist['RSI'] <= 30), color='green', alpha=0.3, zorder=1)
     ax_rsi.set_ylim(0, 100)
     ax_rsi.set_title('RSI (14)', fontsize=12, fontweight='bold')
-    ax_rsi.grid(True, alpha=0.3)
+    ax_rsi.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_rsi.get_xticklabels(), visible=False)
 
     # 6. MACD
     ax2 = fig.add_subplot(gs[5], sharex=ax1)
-    ax2.plot(hist.index, hist['MACD'], label='MACD', color='blue')
-    ax2.plot(hist.index, hist['Signal'], label='Signal', color='orange')
-    ax2.bar(hist.index, hist['MACD']-hist['Signal'], color='gray', alpha=0.3)
-    ax2.axhline(0, color='black', lw=0.8)
+    ax2.plot(hist.index, hist['MACD'], label='MACD', color='blue', zorder=2)
+    ax2.plot(hist.index, hist['Signal'], label='Signal', color='orange', zorder=2)
+    ax2.bar(hist.index, hist['MACD']-hist['Signal'], color='gray', alpha=0.3, zorder=2)
+    ax2.axhline(0, color='black', lw=0.8, zorder=2)
     ax2.set_title('MACD', fontsize=12, fontweight='bold')
-    ax2.grid(True, alpha=0.3)
+    ax2.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax2.get_xticklabels(), visible=False)
     
     # 7. VVIX / VIX Ratio
@@ -690,38 +680,55 @@ def create_charts(data):
         merged_ratio['Ratio'] = merged_ratio['Close_VVIX'] / merged_ratio['Close_VIX']
         
         if not merged_ratio.empty:
-            ax_ratio_vvix.plot(merged_ratio.index, merged_ratio['Ratio'], color='#333333', lw=1.2, label='VVIX/VIX Ratio')
-            ax_ratio_vvix.axhline(7.0, color='red', ls=':', alpha=0.5)
-            ax_ratio_vvix.axhline(4.0, color='green', ls=':', alpha=0.5)
-            ax_ratio_vvix.axhline(5.5, color='gray', ls='--', alpha=0.5, lw=0.8)
+            ax_ratio_vvix.plot(merged_ratio.index, merged_ratio['Ratio'], color='#333333', lw=1.2, label='VVIX/VIX Ratio', zorder=2)
+            ax_ratio_vvix.axhline(7.0, color='red', ls=':', alpha=0.5, zorder=2)
+            ax_ratio_vvix.axhline(4.0, color='green', ls=':', alpha=0.5, zorder=2)
+            ax_ratio_vvix.axhline(5.5, color='gray', ls='--', alpha=0.5, lw=0.8, zorder=2)
             ax_ratio_vvix.fill_between(merged_ratio.index, merged_ratio['Ratio'], 7.0, 
-                                     where=(merged_ratio['Ratio'] > 7.0), color='red', alpha=0.2, label='Complacency')
+                                     where=(merged_ratio['Ratio'] > 7.0), color='red', alpha=0.2, label='Complacency', zorder=1)
             ax_ratio_vvix.fill_between(merged_ratio.index, merged_ratio['Ratio'], 4.0, 
-                                     where=(merged_ratio['Ratio'] < 4.0), color='green', alpha=0.2, label='Panic')
+                                     where=(merged_ratio['Ratio'] < 4.0), color='green', alpha=0.2, label='Panic', zorder=1)
             ax_ratio_vvix.legend(loc='upper left', fontsize=8)
         else:
-            ax_ratio_vvix.text(0.5, 0.5, "No Data", transform=ax_ratio_vvix.transAxes, ha='center')
+            ax_ratio_vvix.text(0.5, 0.5, "No Data", transform=ax_ratio_vvix.transAxes, ha='center', zorder=2)
     except Exception as e:
-        ax_ratio_vvix.text(0.5, 0.5, f"Error: {e}", transform=ax_ratio_vvix.transAxes, ha='center', color='red')
+        ax_ratio_vvix.text(0.5, 0.5, f"Error: {e}", transform=ax_ratio_vvix.transAxes, ha='center', color='red', zorder=2)
 
     ax_ratio_vvix.set_title('VVIX / VIX Ratio', fontsize=12, fontweight='bold')
-    ax_ratio_vvix.grid(True, alpha=0.3)
+    ax_ratio_vvix.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_ratio_vvix.get_xticklabels(), visible=False)
 
     # 8. RSI(2)
     ax_rsi2 = fig.add_subplot(gs[7], sharex=ax1)
-    ax_rsi2.plot(hist.index, hist['RSI_2'], color='gray', label='RSI(2)', linewidth=1.2)
-    ax_rsi2.axhline(10, color='green', linestyle='--', alpha=0.7)
-    ax_rsi2.axhline(90, color='red', linestyle='--', alpha=0.7)
-    ax_rsi2.fill_between(hist.index, hist['RSI_2'], 10, where=(hist['RSI_2'] < 10), color='green', alpha=0.3, label='Buy Zone')
-    ax_rsi2.fill_between(hist.index, hist['RSI_2'], 90, where=(hist['RSI_2'] > 90), color='red', alpha=0.3, label='Danger')
+    ax_rsi2.plot(hist.index, hist['RSI_2'], color='gray', label='RSI(2)', linewidth=1.2, zorder=2)
+    ax_rsi2.axhline(10, color='green', linestyle='--', alpha=0.7, zorder=2)
+    ax_rsi2.axhline(90, color='red', linestyle='--', alpha=0.7, zorder=2)
+    ax_rsi2.fill_between(hist.index, hist['RSI_2'], 10, where=(hist['RSI_2'] < 10), color='green', alpha=0.3, label='Buy Zone', zorder=1)
+    ax_rsi2.fill_between(hist.index, hist['RSI_2'], 90, where=(hist['RSI_2'] > 90), color='red', alpha=0.3, label='Danger', zorder=1)
     ax_rsi2.scatter(hist.index[-1], hist['RSI_2'].iloc[-1], color='red', s=50, zorder=5)
     ax_rsi2.set_ylim(0, 100)
     ax_rsi2.set_title('RSI(2) - Short-term Pullback', fontsize=12, fontweight='bold')
     ax_rsi2.legend(loc='upper right')
-    ax_rsi2.grid(True, alpha=0.3)
+    ax_rsi2.grid(True, alpha=0.3, zorder=1)
     ax_rsi2.set_xlabel('Date', fontsize=10)
     
+    # === [모든 서브플롯에 배경색 일괄 적용] ===
+    # 배경색 칠하기를 위한 그룹화 (연속된 구간 찾기)
+    hist['group'] = (hist['Season'] != hist['Season'].shift()).cumsum()
+    
+    # 모든 axes를 리스트로 묶음
+    all_axes = [ax1, ax_vol, ax_vix_abs, ax_ratio, ax_rsi, ax2, ax_ratio_vvix, ax_rsi2]
+    
+    # 반복문으로 모든 차트에 배경색 적용
+    for ax in all_axes:
+        for _, group_data in hist.groupby('group'):
+            season = group_data['Season'].iloc[0]
+            start_date = group_data.index[0]
+            end_date = group_data.index[-1]
+            # zorder=0으로 설정하여 모든 데이터(라인, 바, 그리드 등) 뒤에 배경이 오도록 함
+            # alpha=0.4로 설정하여 가시성 확보
+            ax.axvspan(start_date, end_date, color=season_colors[season], alpha=0.4, zorder=0)
+
     plt.tight_layout()
     return fig
 
