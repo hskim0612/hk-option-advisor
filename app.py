@@ -603,16 +603,16 @@ def create_charts(data):
         ax_ratio.axhline(1.0, color='red', ls='--', alpha=0.8, lw=1.5, label='Threshold (1.0)')
         
         ax_ratio.fill_between(term_data.index, term_data['Ratio'], 1.0, 
-                         where=(term_data['Ratio'] > 1.0), 
-                         color='red', alpha=0.2, interpolate=True, label='Danger (Back.)')
+                             where=(term_data['Ratio'] > 1.0), 
+                             color='red', alpha=0.2, interpolate=True, label='Danger (Back.)')
         
         ax_ratio.fill_between(term_data.index, term_data['Ratio'], 1.0, 
-                         where=(term_data['Ratio'] <= 1.0), 
-                         color='green', alpha=0.15, interpolate=True, label='Safe (Contango)')
+                             where=(term_data['Ratio'] <= 1.0), 
+                             color='green', alpha=0.15, interpolate=True, label='Safe (Contango)')
         
         ax_ratio.fill_between(term_data.index, term_data['Ratio'], 0.9, 
-                         where=(term_data['Ratio'] < 0.9), 
-                         color='green', alpha=0.3, interpolate=True, label='Super Contango')
+                             where=(term_data['Ratio'] < 0.9), 
+                             color='green', alpha=0.3, interpolate=True, label='Super Contango')
         
         ax_ratio.legend(loc='upper right', fontsize=8)
     else:
@@ -661,9 +661,9 @@ def create_charts(data):
             ax_ratio_vvix.axhline(4.0, color='green', ls=':', alpha=0.5)
             ax_ratio_vvix.axhline(5.5, color='gray', ls='--', alpha=0.5, lw=0.8)
             ax_ratio_vvix.fill_between(merged_ratio.index, merged_ratio['Ratio'], 7.0, 
-                                    where=(merged_ratio['Ratio'] > 7.0), color='red', alpha=0.2, label='Complacency')
+                                       where=(merged_ratio['Ratio'] > 7.0), color='red', alpha=0.2, label='Complacency')
             ax_ratio_vvix.fill_between(merged_ratio.index, merged_ratio['Ratio'], 4.0, 
-                                    where=(merged_ratio['Ratio'] < 4.0), color='green', alpha=0.2, label='Panic')
+                                       where=(merged_ratio['Ratio'] < 4.0), color='green', alpha=0.2, label='Panic')
             ax_ratio_vvix.legend(loc='upper left', fontsize=8)
         else:
             ax_ratio_vvix.text(0.5, 0.5, "No Data", transform=ax_ratio_vvix.transAxes, ha='center')
@@ -949,11 +949,7 @@ def main():
         "<td>5점 미만</td><td>🛡️ 진입 보류 (No Entry)</td><td>-</td><td>-</td></tr>",
         
         "</table>",
-        "<div style='padding: 10px; background-color: #f9f9f9; text-align: center; color: #555; font-size: 13px;'>",
-        "※ <b>설정:</b> Delta -0.10 (Fixed) / DTE 45일 / Spread $5<br>",
-        "※ 손절 라인은 프리미엄 가격 기준입니다. (예: $1.0 진입 시, 200% 손절은 $3.0 도달 시 청산)<br>",
-        "<b style='color:red;'>※ 신규:</b> 투매 신호(+15) + RSI(2) 눌림목(+8) 시 최대 23점 초과 가능",
-        "</div></div>"
+        "</div>"
     ]
     st.markdown("".join(html_verdict_list), unsafe_allow_html=True)
 
@@ -1008,4 +1004,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
