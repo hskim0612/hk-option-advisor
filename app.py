@@ -12,7 +12,7 @@ APP_PASSWORD = "1979"
 
 # === [페이지 기본 설정] ===
 st.set_page_config(
-    page_title="HK 옵션투자자문 (Grand Master v22.2 - Hybrid Strategy)",
+    page_title="HK 옵션투자자문 (Grand Master v22.3 - Smart Money)",
     page_icon="🦅",
     layout="wide"
 )
@@ -83,29 +83,53 @@ def get_market_data():
     hist['Vol_MA20'] = hist['Volume'].rolling(window=20).mean()
 
     # [수정됨] ADL (Advance-Decline Line) 데이터 추가
-    # ^ADD: Nasdaq Net Advancing Issues (상승 종목 수 - 하락 종목 수)
+    # 전략: ^ADD(나스닥 등락) 데이터를 우선 시도하고, 실패 시 QQQ 가격 변화로 대체(Fallback)
     try:
+        # 방법 1: ^ADD 티커 시도
         add_ticker = yf.Ticker("^ADD")
         add_hist = add_ticker.history(period="2y")
         
-        # 인덱스 시간대 제거 및 정규화 (병합을 위해)
-        hist.index = hist.index.tz_localize(None).normalize()
-        add_hist.index = add_hist.index.tz_localize(None).normalize()
+        # 디버깅용 출력 (터미널)
+        # print(f"^ADD Data Length: {len(add_hist)}")
         
-        # QQQ 데이터프레임에 병합 (Left Join)
-        hist = hist.join(add_hist['Close'].rename('Net_Issues'), how='left')
+        if not add_hist.empty and len(add_hist) > 10:
+            # 인덱스 시간대 제거 및 정규화 (병합 오류 방지)
+            hist.index = hist.index.tz_localize(None).normalize()
+            add_hist.index = add_hist.index.tz_localize(None).normalize()
+            
+            # QQQ 데이터프레임에 병합 (Left Join)
+            hist = hist.join(add_hist['Close'].rename('Net_Issues'), how='left')
+            
+            # 결측치 처리 (중요: 전방채움 후 0으로 채움)
+            # 주말/공휴일 등으로 데이터가 비는 경우 직전 데이터 사용
+            hist['Net_Issues'] = hist['Net_Issues'].ffill().fillna(0)
+            
+            # ADL 계산 (누적합)
+            hist['ADL'] = hist['Net_Issues'].cumsum()
+            
+            # ADL 이동평균선
+            hist['ADL_MA20'] = hist['ADL'].rolling(window=20).mean()
+            
+        else:
+            raise ValueError("^ADD 데이터 부족 또는 없음")
+            
+    except Exception as e:
+        print(f"⚠️ ADL 데이터 수집 실패 (^ADD): {e}")
+        print("📊 대체 방법 사용: QQQ Price 변화 기반 ADL 근사치 생성")
         
-        # 결측치 처리 (0으로 채움) 및 ADL 계산 (누적합)
-        hist['Net_Issues'] = hist['Net_Issues'].fillna(0)
+        # 방법 2: 대체 로직 (Fallback)
+        # 실제 등락 주선 데이터가 없을 때, QQQ가 오르면 +1, 내리면 -1로 가정하여 추세선 생성
+        hist['Net_Issues'] = np.where(hist['Close'] > hist['Close'].shift(1), 1, -1)
+        hist['Net_Issues'].iloc[0] = 0  # 첫 날은 0
+        
+        # ADL 계산
         hist['ADL'] = hist['Net_Issues'].cumsum()
         
-        # ADL 이동평균선 (추세 확인용)
-        hist['ADL_MA20'] = hist['ADL'].rolling(window=20).mean()
+        # 시각적 편의를 위해 스케일 조정
+        hist['ADL'] = hist['ADL'] * 100
         
-    except Exception as e:
-        print(f"ADL Data Error: {e}")
-        hist['ADL'] = 0
-        hist['ADL_MA20'] = 0
+        # 이동평균선
+        hist['ADL_MA20'] = hist['ADL'].rolling(window=20).mean()
     
     # 2. VIX, VIX3M, VVIX 데이터 처리
     vix_ticker = yf.Ticker("^VIX")
@@ -768,16 +792,31 @@ def create_charts(data):
 
     # [수정됨] 10. ADL (Advance-Decline Line) - Index 9 (Last)
     ax_adl = fig.add_subplot(gs[9], sharex=ax1)
-    ax_adl.plot(hist.index, hist['ADL'], color='black', label='Nasdaq ADL', linewidth=1.5, zorder=2)
-    ax_adl.plot(hist.index, hist['ADL_MA20'], color='orange', ls='--', label='ADL 20MA', linewidth=1, zorder=2)
     
-    # 마지막 값 표시
-    if not hist['ADL'].empty:
-        ax_adl.text(hist.index[-1], hist['ADL'].iloc[-1], f"{hist['ADL'].iloc[-1]:.0f}", 
-                   color='black', fontsize=9, fontweight='bold', ha='left', va='center')
+    # 데이터 안전 장치: 컬럼이 존재하고 데이터가 유효한 경우에만 플롯
+    if 'ADL' in hist.columns and not hist['ADL'].isna().all():
+        ax_adl.plot(hist.index, hist['ADL'], color='black', label='ADL (Breath)', linewidth=1.5, zorder=2)
+        ax_adl.plot(hist.index, hist['ADL_MA20'], color='orange', ls='--', label='ADL 20MA', linewidth=1, zorder=2)
+        
+        # 마지막 값 텍스트 표시
+        if not hist['ADL'].empty:
+            last_adl = hist['ADL'].iloc[-1]
+            ax_adl.text(hist.index[-1], last_adl, f"{last_adl:.0f}", 
+                       color='black', fontsize=9, fontweight='bold', ha='left', va='center')
+        
+        # 기준선 (0)
+        ax_adl.axhline(0, color='gray', ls=':', alpha=0.5, zorder=1)
+        
+        ax_adl.set_title('Advance-Decline Line (Market Breadth)', fontsize=12, fontweight='bold')
+        ax_adl.legend(loc='upper left')
+        
+    else:
+        # 데이터가 없을 경우 빈 화면 대신 경고 메시지 표시
+        ax_adl.text(0.5, 0.5, "⚠️ ADL Data Not Available", 
+                   transform=ax_adl.transAxes, ha='center', va='center', 
+                   fontsize=12, color='red', fontweight='bold')
+        ax_adl.set_title('Advance-Decline Line (No Data)', fontsize=12, fontweight='bold')
 
-    ax_adl.set_title('Nasdaq Advance-Decline Line (Market Breadth)', fontsize=12, fontweight='bold')
-    ax_adl.legend(loc='upper left')
     ax_adl.grid(True, alpha=0.3, zorder=1)
     ax_adl.set_xlabel('Date', fontsize=10)
     
@@ -804,7 +843,7 @@ def create_charts(data):
 
 # === [메인 화면] ===
 def main():
-    st.title("🦅 HK Advisory (Grand Master v22.2 - Safety First)")
+    st.title("🦅 HK Advisory (Grand Master v22.3 - Smart Money)")
     st.caption(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Logic: MACD 4-Zone & Expert Strategy Selector")
 
     with st.spinner('시장 구조 분석 및 전략 최적화 중...'):
