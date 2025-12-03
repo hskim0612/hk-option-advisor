@@ -553,23 +553,57 @@ def find_best_option(price, iv, target_delta, strategy_type):
         print(f"Option Search Error: {e}")
         return None
 
-# === [6] 차트 (8개 서브플롯) ===
+# === [6] 차트 (8개 서브플롯) - 수정됨: 4계절 배경 적용 ===
 def create_charts(data):
-    hist = data['hist']
+    hist = data['hist'].copy()  # 원본 데이터 보호를 위해 복사
     
+    # === [배경색 로직 추가] 4계절 계산 ===
+    # 시즌별 조건 정의 (벡터화 연산)
+    cond_summer = (hist['Close'] > hist['MA50']) & (hist['Close'] > hist['MA200'])
+    cond_autumn = (hist['Close'] < hist['MA50']) & (hist['Close'] > hist['MA200'])
+    cond_winter = (hist['Close'] < hist['MA50']) & (hist['Close'] < hist['MA200'])
+    # Spring은 나머지 경우
+    
+    conditions = [cond_summer, cond_autumn, cond_winter]
+    choices = ['SUMMER', 'AUTUMN', 'WINTER']
+    
+    # 'Season' 컬럼 생성 (기본값 SPRING)
+    hist['Season'] = np.select(conditions, choices, default='SPRING')
+    
+    # 시즌별 배경 색상 설정 (파스텔 톤)
+    season_colors = {
+        'SUMMER': '#FFEBEE',  # 연한 붉은색 (상승확산)
+        'AUTUMN': '#FFF3E0',  # 연한 주황색 (조정)
+        'WINTER': '#E3F2FD',  # 연한 파란색 (하락)
+        'SPRING': '#E8F5E9'   # 연한 초록색 (회복)
+    }
+    
+    # === 차트 그리기 시작 ===
     fig = plt.figure(figsize=(10, 24))
     gs = fig.add_gridspec(8, 1, height_ratios=[2, 0.6, 1, 1, 1, 1, 1, 1])
     
-    # 1. Price
+    # 1. Price Chart with Season Background
     ax1 = fig.add_subplot(gs[0])
-    ax1.plot(hist.index, hist['Close'], label='QQQ', color='black', alpha=0.7)
-    ax1.plot(hist.index, hist['MA20'], label='20MA', color='green', ls='--', lw=1)
-    ax1.plot(hist.index, hist['MA50'], label='50MA', color='blue', ls='-', lw=1.5)
-    ax1.plot(hist.index, hist['MA200'], label='200MA', color='red', ls='-', lw=2)
-    ax1.fill_between(hist.index, hist['BB_Upper'], hist['BB_Lower'], color='gray', alpha=0.1, label='Bollinger')
-    ax1.set_title('QQQ Price Trend', fontsize=12, fontweight='bold')
+    
+    # 배경색 칠하기 (연속된 구간 찾기)
+    hist['group'] = (hist['Season'] != hist['Season'].shift()).cumsum()
+    
+    for _, group_data in hist.groupby('group'):
+        season = group_data['Season'].iloc[0]
+        start_date = group_data.index[0]
+        end_date = group_data.index[-1]
+        ax1.axvspan(start_date, end_date, color=season_colors[season], alpha=0.6, zorder=0)
+
+    # 기존 라인 플롯 (zorder를 높임)
+    ax1.plot(hist.index, hist['Close'], label='QQQ', color='black', alpha=0.9, zorder=2)
+    ax1.plot(hist.index, hist['MA20'], label='20MA', color='green', ls='--', lw=1, zorder=2)
+    ax1.plot(hist.index, hist['MA50'], label='50MA', color='blue', ls='-', lw=1.5, zorder=2)
+    ax1.plot(hist.index, hist['MA200'], label='200MA', color='red', ls='-', lw=2, zorder=2)
+    ax1.fill_between(hist.index, hist['BB_Upper'], hist['BB_Lower'], color='gray', alpha=0.1, label='Bollinger', zorder=1)
+    
+    ax1.set_title('QQQ Price Trend with Market Seasons', fontsize=12, fontweight='bold')
     ax1.legend(loc='upper left')
-    ax1.grid(True, alpha=0.3)
+    ax1.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax1.get_xticklabels(), visible=False)
     
     # 2. Volume
@@ -661,9 +695,9 @@ def create_charts(data):
             ax_ratio_vvix.axhline(4.0, color='green', ls=':', alpha=0.5)
             ax_ratio_vvix.axhline(5.5, color='gray', ls='--', alpha=0.5, lw=0.8)
             ax_ratio_vvix.fill_between(merged_ratio.index, merged_ratio['Ratio'], 7.0, 
-                                       where=(merged_ratio['Ratio'] > 7.0), color='red', alpha=0.2, label='Complacency')
+                                     where=(merged_ratio['Ratio'] > 7.0), color='red', alpha=0.2, label='Complacency')
             ax_ratio_vvix.fill_between(merged_ratio.index, merged_ratio['Ratio'], 4.0, 
-                                       where=(merged_ratio['Ratio'] < 4.0), color='green', alpha=0.2, label='Panic')
+                                     where=(merged_ratio['Ratio'] < 4.0), color='green', alpha=0.2, label='Panic')
             ax_ratio_vvix.legend(loc='upper left', fontsize=8)
         else:
             ax_ratio_vvix.text(0.5, 0.5, "No Data", transform=ax_ratio_vvix.transAxes, ha='center')
