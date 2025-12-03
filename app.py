@@ -553,7 +553,7 @@ def find_best_option(price, iv, target_delta, strategy_type):
         print(f"Option Search Error: {e}")
         return None
 
-# === [6] 차트 (9개 서브플롯) - 수정됨: Trend 차트 위치 변경 및 배경 로직 수정 ===
+# === [6] 차트 (9개 서브플롯) - 수정됨: Trend 차트 추가 및 MACD 배경 적용 ===
 def create_charts(data):
     hist = data['hist'].copy()  # 원본 데이터 보호를 위해 복사
     
@@ -580,10 +580,10 @@ def create_charts(data):
     # === 차트 그리기 시작 ===
     # 높이를 조금 더 늘리고 9행으로 변경
     fig = plt.figure(figsize=(10, 27))
-    # 높이 비율 조정: [1] Volume(0.6), [2] Trend(1.5) 순서로 변경
-    gs = fig.add_gridspec(9, 1, height_ratios=[2, 0.6, 1.5, 1, 1, 1, 1, 1, 1])
+    # 높이 비율 조정 (Trend 차트 공간 1.5 추가)
+    gs = fig.add_gridspec(9, 1, height_ratios=[2, 1.5, 0.6, 1, 1, 1, 1, 1, 1])
     
-    # 1. Price Chart (Main) - Index 0
+    # 1. Price Chart (Main)
     ax1 = fig.add_subplot(gs[0])
     
     # 기존 라인 플롯 (zorder 설정 유지)
@@ -597,44 +597,51 @@ def create_charts(data):
     ax1.legend(loc='upper left')
     ax1.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax1.get_xticklabels(), visible=False)
-
-    # 2. Volume (Moved to 2nd position) - Index 1
-    ax_vol = fig.add_subplot(gs[1], sharex=ax1)
-    colors = ['red' if c < o else 'green' for c, o in zip(hist['Close'], hist['Open'])]
-    ax_vol.bar(hist.index, hist['Volume'], color=colors, alpha=0.5, zorder=2)
-    ax_vol.plot(hist.index, hist['Vol_MA20'], color='black', lw=1, zorder=2)
-    ax_vol.set_title(f"Volume ({data['vol_pct']:.1f}%)", fontsize=10, fontweight='bold')
-    ax_vol.grid(True, alpha=0.3, zorder=1)
-    plt.setp(ax_vol.get_xticklabels(), visible=False)
     
-    # 3. QQQ Trend Graph (Moved to 3rd position) - Index 2
-    # 배경: MACD 데드크로스(MACD < Signal) 구간을 다른 색으로 표시
-    ax_trend = fig.add_subplot(gs[2], sharex=ax1)
+    # [NEW] 2. QQQ Trend Graph (2nd Position)
+    # 배경: MACD가 음수인 구간을 다른 색으로 표시
+    ax_trend = fig.add_subplot(gs[1], sharex=ax1)
     ax_trend.plot(hist.index, hist['Close'], label='QQQ', color='black', alpha=0.8, zorder=2)
     ax_trend.plot(hist.index, hist['MA20'], label='20MA', color='green', ls='--', lw=1, zorder=2)
     ax_trend.plot(hist.index, hist['MA50'], label='50MA', color='blue', ls='-', lw=1, zorder=2)
     
-    # [수정됨] MACD 데드크로스(MACD < Signal) 구간 배경 칠하기
-    dead_cross_mask = hist['MACD'] < hist['Signal']
-    # 그룹화하여 연속된 구간 찾기
-    hist['dc_group'] = (dead_cross_mask != dead_cross_mask.shift()).cumsum()
+    # MACD 음수 구간 배경 칠하기
+    # 연속된 구간을 찾아 칠하거나 fill_between 사용
+    # 여기서는 fill_between과 boolean indexing 활용
+    # y축 전체를 덮기 위해 transform 사용하지 않고, 현재 보이는 y축 범위에 맞춰 칠함
+    # 하지만 동적 범위 문제를 피하기 위해 axvspan을 루프로 돌리는 것이 가장 안전함
     
-    for _, group in hist[dead_cross_mask].groupby('dc_group'):
+    # MACD < 0 인 구간 식별
+    macd_neg_mask = hist['MACD'] < 0
+    # 그룹화하여 연속된 구간 찾기
+    hist['macd_neg_group'] = (macd_neg_mask != macd_neg_mask.shift()).cumsum()
+    
+    for _, group in hist[macd_neg_mask].groupby('macd_neg_group'):
         start = group.index[0]
         end = group.index[-1]
-        # Light Red/Pink color specifically for Dead Cross
-        ax_trend.axvspan(start, end, color='#FFCDD2', alpha=0.4, zorder=0, label='MACD < Signal (Dead)')
+        # Light Red/Pink color specifically for MACD negative
+        ax_trend.axvspan(start, end, color='#FFCDD2', alpha=0.4, zorder=0, label='MACD < 0')
 
     # 중복 라벨 제거를 위한 범례 처리
     handles, labels = ax_trend.get_legend_handles_labels()
     by_label = dict(zip(labels, handles))
     ax_trend.legend(by_label.values(), by_label.keys(), loc='upper left')
     
-    ax_trend.set_title('QQQ Trend Check (Background: MACD Dead Cross)', fontsize=10, fontweight='bold')
+    ax_trend.set_title('QQQ Trend Check (Background: MACD Negative Zone)', fontsize=10, fontweight='bold')
     ax_trend.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_trend.get_xticklabels(), visible=False)
 
-    # 4. VIX Level (Absolute) - Index 3
+    
+    # 3. Volume (Shifted to gs[2])
+    ax_vol = fig.add_subplot(gs[2], sharex=ax1)
+    colors = ['red' if c < o else 'green' for c, o in zip(hist['Close'], hist['Open'])]
+    ax_vol.bar(hist.index, hist['Volume'], color=colors, alpha=0.5, zorder=2)
+    ax_vol.plot(hist.index, hist['Vol_MA20'], color='black', lw=1, zorder=2)
+    ax_vol.set_title(f"Volume ({data['vol_pct']:.1f}%)", fontsize=10, fontweight='bold')
+    ax_vol.grid(True, alpha=0.3, zorder=1)
+    plt.setp(ax_vol.get_xticklabels(), visible=False)
+
+    # 4. VIX Level (Absolute) (Shifted to gs[3])
     ax_vix_abs = fig.add_subplot(gs[3], sharex=ax1)
     ax_vix_abs.plot(data['vix_hist'].index, data['vix_hist']['Close'], color='purple', label='VIX (Spot)', zorder=2)
     if data['vix3m_hist'] is not None and not data['vix3m_hist'].empty:
@@ -647,7 +654,7 @@ def create_charts(data):
     ax_vix_abs.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_vix_abs.get_xticklabels(), visible=False)
 
-    # 5. VIX Term Structure (Ratio) - Index 4
+    # 5. VIX Term Structure (Ratio) (Shifted to gs[4])
     ax_ratio = fig.add_subplot(gs[4], sharex=ax1)
     term_data = data.get('vix_term_df')
     
@@ -675,7 +682,7 @@ def create_charts(data):
     ax_ratio.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_ratio.get_xticklabels(), visible=False)
 
-    # 6. RSI(14) - Index 5
+    # 6. RSI(14) (Shifted to gs[5])
     ax_rsi = fig.add_subplot(gs[5], sharex=ax1)
     ax_rsi.plot(hist.index, hist['RSI'], color='purple', label='RSI(14)', zorder=2)
     ax_rsi.axhline(70, color='red', ls='--', alpha=0.7, zorder=2)
@@ -687,7 +694,7 @@ def create_charts(data):
     ax_rsi.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_rsi.get_xticklabels(), visible=False)
 
-    # 7. MACD - Index 6
+    # 7. MACD (Shifted to gs[6])
     ax2 = fig.add_subplot(gs[6], sharex=ax1)
     ax2.plot(hist.index, hist['MACD'], label='MACD', color='blue', zorder=2)
     ax2.plot(hist.index, hist['Signal'], label='Signal', color='orange', zorder=2)
@@ -697,7 +704,7 @@ def create_charts(data):
     ax2.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax2.get_xticklabels(), visible=False)
     
-    # 8. VVIX / VIX Ratio - Index 7
+    # 8. VVIX / VIX Ratio (Shifted to gs[7])
     ax_ratio_vvix = fig.add_subplot(gs[7], sharex=ax1)
     try:
         df_v = data['vix_hist'][['Close']].copy()
@@ -727,7 +734,7 @@ def create_charts(data):
     ax_ratio_vvix.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_ratio_vvix.get_xticklabels(), visible=False)
 
-    # 9. RSI(2) - Index 8
+    # 9. RSI(2) (Shifted to gs[8])
     ax_rsi2 = fig.add_subplot(gs[8], sharex=ax1)
     ax_rsi2.plot(hist.index, hist['RSI_2'], color='gray', label='RSI(2)', linewidth=1.2, zorder=2)
     ax_rsi2.axhline(10, color='green', linestyle='--', alpha=0.7, zorder=2)
@@ -746,7 +753,6 @@ def create_charts(data):
     hist['group'] = (hist['Season'] != hist['Season'].shift()).cumsum()
     
     # 모든 axes를 리스트로 묶음 (Trend 차트는 제외 - 별도 MACD 배경 적용됨)
-    # 순서: Price, Volume, Trend(X), VIX_Abs, Ratio, RSI, MACD, Ratio_VVIX, RSI2
     all_axes_except_trend = [ax1, ax_vol, ax_vix_abs, ax_ratio, ax_rsi, ax2, ax_ratio_vvix, ax_rsi2]
     
     # 반복문으로 차트에 계절 배경색 적용 (Trend 차트 제외)
@@ -1024,8 +1030,38 @@ def main():
     ]
     st.markdown("".join(html_verdict_list), unsafe_allow_html=True)
 
-    # 4. Manual / Warning (매뉴얼 삭제됨)
-    if not (strategy and matrix_id != 'no_entry' and matrix_id != 'panic'):
+    # 4. Manual / Warning
+    if strategy and matrix_id != 'no_entry' and matrix_id != 'panic':
+        # 전략 타입에 따라 표시 내용 변경
+        pos_desc = ""
+        if strategy['type'] == 'CDS':
+            pos_desc = f"QQQ Call Debit Spread (Bull Call)<br>• <b>Long Call:</b> Strike ${strategy['long']}<br>• <b>Short Call:</b> Strike ${strategy['short']}"
+        else:
+            pos_desc = f"QQQ Put Credit Spread (Bull Put)<br>• <b>Short Put:</b> Strike ${strategy['short']}<br>• <b>Long Put:</b> Strike ${strategy['long']}"
+        
+        html_manual_list = [
+            "<div style='border: 2px solid #2196F3; padding: 15px; margin-top: 20px; border-radius: 10px; background-color: #ffffff; color: black;'>",
+            "<h3 style='color: #2196F3; margin-top: 0;'>👮‍♂️ 주문 상세 매뉴얼 (Action Plan)</h3>",
+            "<table style='border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; text-align: center; font-size: 13px; margin-bottom: 15px;'>",
+            "<tr style='background-color: #e3f2fd; border: 1px solid #ddd;'>",
+            "<th style='padding: 8px; border: 1px solid #ddd;'>구분</th><th style='padding: 8px; border: 1px solid #ddd;'>행동</th><th style='padding: 8px; border: 1px solid #ddd;'>시간</th><th style='padding: 8px; border: 1px solid #ddd;'>방식</th></tr>",
+            
+            "<tr><td style='padding: 8px; border: 1px solid #ddd; font-weight:bold;'>진입 (Entry)</td><td style='padding: 8px; border: 1px solid #ddd;'>신규 포지션 구축</td><td style='padding: 8px; border: 1px solid #ddd;'>🕒 <b>마감 30분 전</b></td><td style='padding: 8px; border: 1px solid #ddd;'><b>수동 진입</b></td></tr>",
+            "<tr><td style='padding: 8px; border: 1px solid #ddd; font-weight:bold; color:red;'>손절 (Loss)</td><td style='padding: 8px; border: 1px solid #ddd;'>위기 탈출</td><td style='padding: 8px; border: 1px solid #ddd;'>🚨 <b>언제든지</b></td><td style='padding: 8px; border: 1px solid #ddd;'><b>자동 감시 주문</b></td></tr>",
+            "<tr><td style='padding: 8px; border: 1px solid #ddd; font-weight:bold; color:green;'>익절 (Win)</td><td style='padding: 8px; border: 1px solid #ddd;'>수익 실현</td><td style='padding: 8px; border: 1px solid #ddd;'>💰 <b>장중 아무 때나</b></td><td style='padding: 8px; border: 1px solid #ddd;'><b>GTC 지정가 주문</b></td></tr>",
+            "</table>",
+            
+            "<div style='background-color: #f9f9f9; padding: 10px; border-radius: 5px; font-size: 14px;'>",
+            f"<b>✅ 현재 포지션 목표 (Spec):</b><br>",
+            f"• <b>전략:</b> {pos_desc} (Width ${strategy['width']})<br>",
+            f"• <b>만기:</b> {strategy['expiry']} (DTE {strategy['dte']}일)<br>",
+            "<hr style='margin: 8px 0; border: 0; border-top: 1px solid #ddd;'>",
+            f"• <b>익절 (Target):</b> 진입가 대비 <b style='color:green;'>{profit_target}</b> 도달 시<br>",
+            f"• <b>손절 (Stop):</b> 진입가 대비 <b style='color:red;'>{stop_loss}</b> 도달 시 (즉시 청산)",
+            "</div></div>"
+        ]
+        st.markdown("".join(html_manual_list), unsafe_allow_html=True)
+    else:
         if matrix_id == 'panic':
             reason = "VIX 급등, 구조 붕괴(Back.), 또는 VVIX Trap이 감지되었습니다."
         else:
