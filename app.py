@@ -12,7 +12,7 @@ APP_PASSWORD = "1979"
 
 # === [페이지 기본 설정] ===
 st.set_page_config(
-    page_title="HK 옵션투자자문 (Grand Master v22.1 - Hybrid Strategy)",
+    page_title="HK 옵션투자자문 (Grand Master v22.2 - Hybrid Strategy)",
     page_icon="🦅",
     layout="wide"
 )
@@ -553,7 +553,7 @@ def find_best_option(price, iv, target_delta, strategy_type):
         print(f"Option Search Error: {e}")
         return None
 
-# === [6] 차트 (8개 서브플롯) - 수정됨: 4계절 배경 모든 서브플롯 적용 ===
+# === [6] 차트 (9개 서브플롯) - 수정됨: Trend 차트 추가 및 MACD 배경 적용 ===
 def create_charts(data):
     hist = data['hist'].copy()  # 원본 데이터 보호를 위해 복사
     
@@ -578,10 +578,12 @@ def create_charts(data):
     }
     
     # === 차트 그리기 시작 ===
-    fig = plt.figure(figsize=(10, 24))
-    gs = fig.add_gridspec(8, 1, height_ratios=[2, 0.6, 1, 1, 1, 1, 1, 1])
+    # 높이를 조금 더 늘리고 9행으로 변경
+    fig = plt.figure(figsize=(10, 27))
+    # 높이 비율 조정 (Trend 차트 공간 1.5 추가)
+    gs = fig.add_gridspec(9, 1, height_ratios=[2, 1.5, 0.6, 1, 1, 1, 1, 1, 1])
     
-    # 1. Price Chart
+    # 1. Price Chart (Main)
     ax1 = fig.add_subplot(gs[0])
     
     # 기존 라인 플롯 (zorder 설정 유지)
@@ -596,8 +598,42 @@ def create_charts(data):
     ax1.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax1.get_xticklabels(), visible=False)
     
-    # 2. Volume
-    ax_vol = fig.add_subplot(gs[1], sharex=ax1)
+    # [NEW] 2. QQQ Trend Graph (2nd Position)
+    # 배경: MACD가 음수인 구간을 다른 색으로 표시
+    ax_trend = fig.add_subplot(gs[1], sharex=ax1)
+    ax_trend.plot(hist.index, hist['Close'], label='QQQ', color='black', alpha=0.8, zorder=2)
+    ax_trend.plot(hist.index, hist['MA20'], label='20MA', color='green', ls='--', lw=1, zorder=2)
+    ax_trend.plot(hist.index, hist['MA50'], label='50MA', color='blue', ls='-', lw=1, zorder=2)
+    
+    # MACD 음수 구간 배경 칠하기
+    # 연속된 구간을 찾아 칠하거나 fill_between 사용
+    # 여기서는 fill_between과 boolean indexing 활용
+    # y축 전체를 덮기 위해 transform 사용하지 않고, 현재 보이는 y축 범위에 맞춰 칠함
+    # 하지만 동적 범위 문제를 피하기 위해 axvspan을 루프로 돌리는 것이 가장 안전함
+    
+    # MACD < 0 인 구간 식별
+    macd_neg_mask = hist['MACD'] < 0
+    # 그룹화하여 연속된 구간 찾기
+    hist['macd_neg_group'] = (macd_neg_mask != macd_neg_mask.shift()).cumsum()
+    
+    for _, group in hist[macd_neg_mask].groupby('macd_neg_group'):
+        start = group.index[0]
+        end = group.index[-1]
+        # Light Red/Pink color specifically for MACD negative
+        ax_trend.axvspan(start, end, color='#FFCDD2', alpha=0.4, zorder=0, label='MACD < 0')
+
+    # 중복 라벨 제거를 위한 범례 처리
+    handles, labels = ax_trend.get_legend_handles_labels()
+    by_label = dict(zip(labels, handles))
+    ax_trend.legend(by_label.values(), by_label.keys(), loc='upper left')
+    
+    ax_trend.set_title('QQQ Trend Check (Background: MACD Negative Zone)', fontsize=10, fontweight='bold')
+    ax_trend.grid(True, alpha=0.3, zorder=1)
+    plt.setp(ax_trend.get_xticklabels(), visible=False)
+
+    
+    # 3. Volume (Shifted to gs[2])
+    ax_vol = fig.add_subplot(gs[2], sharex=ax1)
     colors = ['red' if c < o else 'green' for c, o in zip(hist['Close'], hist['Open'])]
     ax_vol.bar(hist.index, hist['Volume'], color=colors, alpha=0.5, zorder=2)
     ax_vol.plot(hist.index, hist['Vol_MA20'], color='black', lw=1, zorder=2)
@@ -605,8 +641,8 @@ def create_charts(data):
     ax_vol.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_vol.get_xticklabels(), visible=False)
 
-    # 3. VIX Level (Absolute)
-    ax_vix_abs = fig.add_subplot(gs[2], sharex=ax1)
+    # 4. VIX Level (Absolute) (Shifted to gs[3])
+    ax_vix_abs = fig.add_subplot(gs[3], sharex=ax1)
     ax_vix_abs.plot(data['vix_hist'].index, data['vix_hist']['Close'], color='purple', label='VIX (Spot)', zorder=2)
     if data['vix3m_hist'] is not None and not data['vix3m_hist'].empty:
          ax_vix_abs.plot(data['vix3m_hist'].index, data['vix3m_hist']['Close'], color='gray', ls=':', label='VIX3M', zorder=2)
@@ -618,8 +654,8 @@ def create_charts(data):
     ax_vix_abs.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_vix_abs.get_xticklabels(), visible=False)
 
-    # 4. VIX Term Structure (Ratio)
-    ax_ratio = fig.add_subplot(gs[3], sharex=ax1)
+    # 5. VIX Term Structure (Ratio) (Shifted to gs[4])
+    ax_ratio = fig.add_subplot(gs[4], sharex=ax1)
     term_data = data.get('vix_term_df')
     
     if term_data is not None and not term_data.empty:
@@ -646,8 +682,8 @@ def create_charts(data):
     ax_ratio.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_ratio.get_xticklabels(), visible=False)
 
-    # 5. RSI(14)
-    ax_rsi = fig.add_subplot(gs[4], sharex=ax1)
+    # 6. RSI(14) (Shifted to gs[5])
+    ax_rsi = fig.add_subplot(gs[5], sharex=ax1)
     ax_rsi.plot(hist.index, hist['RSI'], color='purple', label='RSI(14)', zorder=2)
     ax_rsi.axhline(70, color='red', ls='--', alpha=0.7, zorder=2)
     ax_rsi.axhline(30, color='green', ls='--', alpha=0.7, zorder=2)
@@ -658,8 +694,8 @@ def create_charts(data):
     ax_rsi.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_rsi.get_xticklabels(), visible=False)
 
-    # 6. MACD
-    ax2 = fig.add_subplot(gs[5], sharex=ax1)
+    # 7. MACD (Shifted to gs[6])
+    ax2 = fig.add_subplot(gs[6], sharex=ax1)
     ax2.plot(hist.index, hist['MACD'], label='MACD', color='blue', zorder=2)
     ax2.plot(hist.index, hist['Signal'], label='Signal', color='orange', zorder=2)
     ax2.bar(hist.index, hist['MACD']-hist['Signal'], color='gray', alpha=0.3, zorder=2)
@@ -668,8 +704,8 @@ def create_charts(data):
     ax2.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax2.get_xticklabels(), visible=False)
     
-    # 7. VVIX / VIX Ratio
-    ax_ratio_vvix = fig.add_subplot(gs[6], sharex=ax1)
+    # 8. VVIX / VIX Ratio (Shifted to gs[7])
+    ax_ratio_vvix = fig.add_subplot(gs[7], sharex=ax1)
     try:
         df_v = data['vix_hist'][['Close']].copy()
         df_vv = data['vvix_hist'][['Close']].copy()
@@ -698,8 +734,8 @@ def create_charts(data):
     ax_ratio_vvix.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_ratio_vvix.get_xticklabels(), visible=False)
 
-    # 8. RSI(2)
-    ax_rsi2 = fig.add_subplot(gs[7], sharex=ax1)
+    # 9. RSI(2) (Shifted to gs[8])
+    ax_rsi2 = fig.add_subplot(gs[8], sharex=ax1)
     ax_rsi2.plot(hist.index, hist['RSI_2'], color='gray', label='RSI(2)', linewidth=1.2, zorder=2)
     ax_rsi2.axhline(10, color='green', linestyle='--', alpha=0.7, zorder=2)
     ax_rsi2.axhline(90, color='red', linestyle='--', alpha=0.7, zorder=2)
@@ -716,11 +752,11 @@ def create_charts(data):
     # 배경색 칠하기를 위한 그룹화 (연속된 구간 찾기)
     hist['group'] = (hist['Season'] != hist['Season'].shift()).cumsum()
     
-    # 모든 axes를 리스트로 묶음
-    all_axes = [ax1, ax_vol, ax_vix_abs, ax_ratio, ax_rsi, ax2, ax_ratio_vvix, ax_rsi2]
+    # 모든 axes를 리스트로 묶음 (Trend 차트는 제외 - 별도 MACD 배경 적용됨)
+    all_axes_except_trend = [ax1, ax_vol, ax_vix_abs, ax_ratio, ax_rsi, ax2, ax_ratio_vvix, ax_rsi2]
     
-    # 반복문으로 모든 차트에 배경색 적용
-    for ax in all_axes:
+    # 반복문으로 차트에 계절 배경색 적용 (Trend 차트 제외)
+    for ax in all_axes_except_trend:
         for _, group_data in hist.groupby('group'):
             season = group_data['Season'].iloc[0]
             start_date = group_data.index[0]
@@ -734,7 +770,7 @@ def create_charts(data):
 
 # === [메인 화면] ===
 def main():
-    st.title("🦅 HK Advisory (Grand Master v22.1 - Safety First)")
+    st.title("🦅 HK Advisory (Grand Master v22.2 - Safety First)")
     st.caption(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Logic: MACD 4-Zone & Expert Strategy Selector")
 
     with st.spinner('시장 구조 분석 및 전략 최적화 중...'):
