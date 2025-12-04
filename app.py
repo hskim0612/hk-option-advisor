@@ -3,6 +3,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 from scipy.stats import norm
+from scipy.signal import argrelextrema  # [추가됨] 고점 탐지용
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
@@ -12,7 +13,7 @@ APP_PASSWORD = "1979"
 
 # === [페이지 기본 설정] ===
 st.set_page_config(
-    page_title="HK 옵션투자자문 (Grand Master v22.4 - Jaws Strategy)",
+    page_title="HK 옵션투자자문 (Grand Master v22.5 - Jaws Divergence)",
     page_icon="🦅",
     layout="wide"
 )
@@ -82,7 +83,7 @@ def get_market_data():
     
     hist['Vol_MA20'] = hist['Volume'].rolling(window=20).mean()
 
-    # [수정됨] ADL (Advance-Decline Line) 데이터 추가
+    # ADL (Advance-Decline Line) 데이터 추가
     try:
         # 방법 1: ^ADD 티커 시도
         add_ticker = yf.Ticker("^ADD")
@@ -579,7 +580,7 @@ def find_best_option(price, iv, target_delta, strategy_type):
         print(f"Option Search Error: {e}")
         return None
 
-# === [6] 차트 (11개 서브플롯) - 수정됨: ADL Overlay Jaws 추가 ===
+# === [6] 차트 (11개 서브플롯) - 수정됨: ADL Overlay Jaws + Divergence 추가 ===
 def create_charts(data):
     hist = data['hist'].copy()  # 원본 데이터 보호를 위해 복사
     
@@ -777,7 +778,7 @@ def create_charts(data):
         if not hist['ADL'].empty:
             last_adl = hist['ADL'].iloc[-1]
             ax_adl.text(hist.index[-1], last_adl, f"{last_adl:.0f}", 
-                       color='black', fontsize=9, fontweight='bold', ha='left', va='center')
+                        color='black', fontsize=9, fontweight='bold', ha='left', va='center')
         
         ax_adl.axhline(0, color='gray', ls=':', alpha=0.5, zorder=1)
         ax_adl.set_title('Advance-Decline Line (Raw)', fontsize=12, fontweight='bold')
@@ -792,7 +793,7 @@ def create_charts(data):
     ax_adl.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_adl.get_xticklabels(), visible=False)
 
-    # [신규] 11. Market Breadth Divergence (The Jaws) - Index 10
+    # [신규 수정] 11. Market Breadth Divergence (The Jaws with Bearish Div.) - Index 10
     ax_jaws = fig.add_subplot(gs[10], sharex=ax1)
     
     if 'ADL' in hist.columns and not hist['ADL'].isna().all():
@@ -808,17 +809,52 @@ def create_charts(data):
         ax_jaws.plot(hist.index, norm_adl, color='blue', alpha=0.6, lw=1.5, label='ADL (Norm)', zorder=2)
         
         # Jaws Effect (Divergence = Red, Healthy = Green)
-        # QQQ > ADL : 위험 (붉은색, 악어 입 벌림)
         ax_jaws.fill_between(hist.index, norm_price, norm_adl, 
                              where=(norm_price > norm_adl), 
                              color='red', alpha=0.3, label='🐊 Jaws Opening (Div.)', zorder=1)
         
-        # QQQ <= ADL : 안전 (초록색, 동행)
         ax_jaws.fill_between(hist.index, norm_price, norm_adl, 
                              where=(norm_price <= norm_adl), 
                              color='green', alpha=0.1, label='🤝 Parallel/Healthy', zorder=1)
         
-        ax_jaws.set_title('Market Breadth Divergence (Relative Strength Overlay)', fontsize=12, fontweight='bold')
+        # --- [추가됨] Bearish Divergence Detection ---
+        # 1. 고점(Peaks) 탐지 (order=5: 좌우 5일, 총 11일 구간 최고점)
+        order = 5
+        peaks = argrelextrema(hist['Close'].values, np.greater, order=order)[0]
+        
+        div_x = []
+        div_y = []
+        div_lines = []
+
+        # 2. Divergence 로직: 주가는 더 높은데, ADL은 더 낮을 때
+        for i in range(1, len(peaks)):
+            prev = peaks[i-1]
+            curr = peaks[i]
+            
+            # 주가 상승 (Higher High)
+            if hist['Close'].iloc[curr] > hist['Close'].iloc[prev]:
+                # ADL 하락 (Lower High)
+                if hist['ADL'].iloc[curr] < hist['ADL'].iloc[prev]:
+                    # 다이버전스 포착
+                    div_x.append(hist.index[curr])
+                    div_y.append(norm_price.iloc[curr]) # 정규화된 차트에 표시해야 함
+                    div_lines.append((prev, curr))
+        
+        # 3. 시각화: 마커 및 연결선
+        if div_x:
+            ax_jaws.scatter(div_x, div_y, color='red', marker='v', s=100, zorder=5, label='Bearish Div. Signal')
+        
+        for prev, curr in div_lines:
+            # 주가 상승 궤적 (초록 점선)
+            ax_jaws.plot([hist.index[prev], hist.index[curr]], 
+                         [norm_price.iloc[prev], norm_price.iloc[curr]], 
+                         color='green', ls='--', alpha=0.5, lw=1)
+            # ADL 하락 궤적 (빨강 점선)
+            ax_jaws.plot([hist.index[prev], hist.index[curr]], 
+                         [norm_adl.iloc[prev], norm_adl.iloc[curr]], 
+                         color='red', ls='--', alpha=0.5, lw=1)
+
+        ax_jaws.set_title('Market Breadth Divergence (Red Marker = Bearish Divergence)', fontsize=12, fontweight='bold')
         ax_jaws.legend(loc='upper left')
         ax_jaws.set_ylim(-0.05, 1.05)
     
@@ -852,8 +888,8 @@ def create_charts(data):
 
 # === [메인 화면] ===
 def main():
-    st.title("🦅 HK Advisory (Grand Master v22.4 - Jaws Strategy)")
-    st.caption(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Logic: MACD 4-Zone & Jaws Overlay")
+    st.title("🦅 HK Advisory (Grand Master v22.5 - Jaws Divergence)")
+    st.caption(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Logic: MACD 4-Zone & Jaws Bearish Divergence")
 
     with st.spinner('시장 구조 분석 및 전략 최적화 중...'):
         try:
