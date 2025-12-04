@@ -1103,20 +1103,8 @@ def main():
     ]
     st.markdown("".join(html_verdict_list), unsafe_allow_html=True)
 
-    # 4. Manual / Warning (매뉴얼 삭제됨)
-    if not (strategy and matrix_id != 'no_entry' and matrix_id != 'panic'):
-        if matrix_id == 'panic':
-            reason = "VIX 급등, 구조 붕괴(Back.), 또는 VVIX Trap이 감지되었습니다."
-        else:
-            reason = "현재 점수가 신규 진입에 적합하지 않습니다."
-
-        html_warning_list = [
-            "<div style='border: 2px solid red; padding: 15px; margin-top: 20px; border-radius: 10px; background-color: #ffebee;'>",
-            "<h3 style='color: red; margin-top: 0;'>⛔ 진입 금지 (No Entry)</h3>",
-            f"<p style='color: black;'>{reason}<br>",
-            "기존 포지션 관리(청산/롤오버)에만 집중하십시오.</p></div>"
-        ]
-        st.markdown("".join(html_warning_list), unsafe_allow_html=True)
+    # 4. Manual / Warning (매뉴얼 삭제됨) - 이 부분이 제거되었습니다
+    # "진입 금지 (No Entry)" 메시지 표시 코드가 삭제됨
 
     st.markdown("---")
     st.subheader("📈 기술적 분석 차트")
