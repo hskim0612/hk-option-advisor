@@ -3,7 +3,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 from scipy.stats import norm
-from scipy.signal import argrelextrema
+from scipy.signal import argrelextrema  # [추가됨] 고점 탐지용
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
@@ -13,7 +13,7 @@ APP_PASSWORD = "1979"
 
 # === [페이지 기본 설정] ===
 st.set_page_config(
-    page_title="HK 옵션투자자문 (Grand Master v22.6 - ADL Momentum)",
+    page_title="HK 옵션투자자문 (Grand Master v22.5 - Jaws Divergence)",
     page_icon="🦅",
     layout="wide"
 )
@@ -51,7 +51,7 @@ def get_market_data():
     qqq = yf.Ticker("QQQ")
     hist = qqq.history(period="2y")
     
-    # 이동평균선
+    # 이동평균선 및 보조지표
     hist['MA20'] = hist['Close'].rolling(window=20).mean()
     hist['MA50'] = hist['Close'].rolling(window=50).mean()
     hist['MA200'] = hist['Close'].rolling(window=200).mean()
@@ -68,7 +68,7 @@ def get_market_data():
     hist['MACD'] = exp1 - exp2
     hist['Signal'] = hist['MACD'].ewm(span=9, adjust=False).mean()
     
-    # RSI
+    # RSI(14)
     delta = hist['Close'].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
@@ -83,8 +83,9 @@ def get_market_data():
     
     hist['Vol_MA20'] = hist['Volume'].rolling(window=20).mean()
 
-    # ADL 데이터 추가 및 5MA 기울기 계산
+    # ADL (Advance-Decline Line) 데이터 추가
     try:
+        # 방법 1: ^ADD 티커 시도
         add_ticker = yf.Ticker("^ADD")
         add_hist = add_ticker.history(period="2y")
         
@@ -95,52 +96,74 @@ def get_market_data():
             hist = hist.join(add_hist['Close'].rename('Net_Issues'), how='left')
             hist['Net_Issues'] = hist['Net_Issues'].ffill().fillna(0)
             hist['ADL'] = hist['Net_Issues'].cumsum()
-            
-            # [핵심 추가] ADL 5일 이동평균 및 기울기(Slope)
-            hist['ADL_MA5'] = hist['ADL'].rolling(window=5).mean()
-            hist['ADL_Slope'] = hist['ADL_MA5'].diff() # 전일 대비 증감분
+            hist['ADL_MA20'] = hist['ADL'].rolling(window=20).mean()
             
         else:
-            raise ValueError("^ADD 데이터 부족")
+            raise ValueError("^ADD 데이터 부족 또는 없음")
             
     except Exception as e:
-        print(f"⚠️ ADL 데이터 수집 실패: {e}")
-        # Fallback
+        print(f"⚠️ ADL 데이터 수집 실패 (^ADD): {e}")
+        # 방법 2: 대체 로직 (Fallback)
         hist['Net_Issues'] = np.where(hist['Close'] > hist['Close'].shift(1), 1, -1)
         hist['Net_Issues'].iloc[0] = 0
         hist['ADL'] = hist['Net_Issues'].cumsum() * 100
-        hist['ADL_MA5'] = hist['ADL'].rolling(window=5).mean()
-        hist['ADL_Slope'] = hist['ADL_MA5'].diff()
+        hist['ADL_MA20'] = hist['ADL'].rolling(window=20).mean()
     
-    # VIX Data processing (기존과 동일)
+    # 2. VIX, VIX3M, VVIX 데이터 처리
     vix_ticker = yf.Ticker("^VIX")
     vix_hist = vix_ticker.history(period="1y")
+    
     vvix_ticker = yf.Ticker("^VVIX")
     vvix_hist = vvix_ticker.history(period="1y")
 
     vix3m_val = None
+    vix3m_hist = None
     vix_term_df = None
 
     try:
         vix3m_ticker = yf.Ticker("^VIX3M")
         vix3m_hist = vix3m_ticker.history(period="1y")
+        
         if not vix3m_hist.empty and not vix_hist.empty:
             vix3m_val = vix3m_hist['Close'].iloc[-1]
+            
             df_vix = vix_hist[['Close']].copy()
             df_vix3m = vix3m_hist[['Close']].copy()
+            
             df_vix.index = df_vix.index.tz_localize(None).normalize()
             df_vix3m.index = df_vix3m.index.tz_localize(None).normalize()
-            merged_df = pd.merge(df_vix, df_vix3m, left_index=True, right_index=True, suffixes=('_VIX', '_VIX3M'))
+            
+            merged_df = pd.merge(
+                df_vix, 
+                df_vix3m, 
+                left_index=True, 
+                right_index=True, 
+                suffixes=('_VIX', '_VIX3M')
+            )
+            
             if len(merged_df) >= 30:
                 merged_df['Ratio'] = merged_df['Close_VIX'] / merged_df['Close_VIX3M']
                 vix_term_df = merged_df
-    except:
-        pass
+            else:
+                vix_term_df = None
+
+    except Exception as e:
+        vix3m_val = None
+        vix_term_df = None
+        print(f"Error fetching VIX/VIX3M: {e}")
+    
+    try:
+        if not vvix_hist.empty:
+            vvix_clean = vvix_hist[['Close']].copy()
+            vvix_clean.index = vvix_clean.index.tz_localize(None).normalize()
+    except Exception as e:
+        print(f"Error processing VVIX: {e}")
 
     curr = hist.iloc[-1]
     prev = hist.iloc[-2]
     curr_vix = vix_hist['Close'].iloc[-1]
     prev_vix = vix_hist['Close'].iloc[-2]
+    
     vol_pct = (curr['Volume'] / curr['Vol_MA20']) * 100
 
     try:
@@ -151,378 +174,982 @@ def get_market_data():
         current_iv = curr_vix / 100.0
 
     return {
-        'price': curr['Close'], 'price_prev': prev['Close'],
+        'price': curr['Close'], 'price_prev': prev['Close'], 'open': curr['Open'],
         'ma20': curr['MA20'], 'ma50': curr['MA50'], 'ma200': curr['MA200'],
-        'rsi': curr['RSI'], 'rsi2': curr['RSI_2'], 
-        'bb_upper': curr['BB_Upper'], 'bb_lower': curr['BB_Lower'],
+        'rsi': curr['RSI'], 'rsi_prev': prev['RSI'],
+        'rsi2': curr['RSI_2'], 
+        'bb_upper': curr['BB_Upper'], 'bb_lower': curr['BB_Lower'], 'bb_lower_prev': prev['BB_Lower'],
         'macd': curr['MACD'], 'signal': curr['Signal'],
+        'macd_prev': prev['MACD'], 'signal_prev': prev['Signal'],
         'volume': curr['Volume'], 'vol_ma20': curr['Vol_MA20'], 'vol_pct': vol_pct,
-        'vix': curr_vix, 'vix_prev': prev_vix, 'vix3m': vix3m_val, 'iv': current_iv,
+        'vix': curr_vix, 'vix_prev': prev_vix,
+        'vix3m': vix3m_val,
+        'iv': current_iv,
         'hist': hist, 'vix_hist': vix_hist, 'vix3m_hist': vix3m_hist, 'vvix_hist': vvix_hist,
         'vix_term_df': vix_term_df
     }
 
-# === [2] 로직 함수들 (기존 유지) ===
+# === [2] 신규 로직 함수 ===
+
 def detect_capitulation(data, log):
     if data['vix_term_df'] is None:
-        log['capitulation'] = 'none'; return 0
+        log['capitulation'] = 'none'
+        return 0
+
     ratio = data['vix'] / data['vix3m'] if data['vix3m'] else 0
     vol_ratio = data['volume'] / data['vol_ma20']
+    
     try:
         term_df = data['vix_term_df']
         if len(term_df) < 2: return 0
         ratio_prev = term_df['Ratio'].iloc[-2] 
+        
         vol_prev = data['hist']['Volume'].iloc[-2]
         vol_ma20_prev = data['hist']['Vol_MA20'].iloc[-2]
         vol_ratio_prev = vol_prev / vol_ma20_prev
-        if (ratio > 1.0 and vol_ratio > 1.5) and (ratio_prev > 1.0 and vol_ratio_prev > 1.5):
-            log['capitulation'] = 'detected'; return 15
-    except: pass
-    log['capitulation'] = 'none'; return 0
+        
+        cond_today = (ratio > 1.0) and (vol_ratio > 1.5)
+        cond_yesterday = (ratio_prev > 1.0) and (vol_ratio_prev > 1.5)
+        
+        if cond_today and cond_yesterday:
+            log['capitulation'] = 'detected'
+            return 15
+    except Exception as e:
+        print(f"Capitulation Check Error: {e}")
+
+    log['capitulation'] = 'none'
+    return 0
 
 def detect_vvix_trap(data, log):
     try:
         vix_hist = data['vix_hist']['Close']
         if len(vix_hist) < 5: return 0
         vix_ma3 = vix_hist.rolling(3).mean()
-        vix_chg = ((vix_ma3.iloc[-1] - vix_ma3.iloc[-4])/vix_ma3.iloc[-4])*100
+        
+        vix_change_pct = ((vix_ma3.iloc[-1] - vix_ma3.iloc[-4]) / vix_ma3.iloc[-4]) * 100
+        
         vvix_hist = data['vvix_hist']['Close']
         if vvix_hist.empty: return 0
-        vvix_chg = ((vvix_hist.iloc[-1] - vvix_hist.iloc[-2])/vvix_hist.iloc[-2])*100
-        if abs(vix_chg) < 2.0 and vvix_chg > 5.0:
-            log['vvix_trap'] = 'detected'; return -10
-    except: pass
-    log['vvix_trap'] = 'none'; return 0
+        vvix_change_pct = ((vvix_hist.iloc[-1] - vvix_hist.iloc[-2]) / vvix_hist.iloc[-2]) * 100
+        
+        if abs(vix_change_pct) < 2.0 and vvix_change_pct > 5.0:
+            log['vvix_trap'] = 'detected'
+            return -10
+    except Exception as e:
+        print(f"VVIX Trap Error: {e}")
+
+    log['vvix_trap'] = 'none'
+    return 0
 
 def detect_rsi2_dip(data, log):
     try:
         rsi2 = data['rsi2']
-        ratio = data['vix']/data['vix3m'] if data['vix3m'] else 1.1
+        ratio = data['vix'] / data['vix3m'] if data['vix3m'] else 1.1
+        
         vvix_hist = data['vvix_hist']['Close']
         if len(vvix_hist) < 2: return 0
-        if rsi2 < 10 and ratio < 1.0 and (vvix_hist.iloc[-1] < vvix_hist.iloc[-2]):
-            log['rsi2_dip'] = 'detected'; return 8
-    except: pass
-    log['rsi2_dip'] = 'none'; return 0
+        vvix_falling = vvix_hist.iloc[-1] < vvix_hist.iloc[-2]
+        
+        if rsi2 < 10 and ratio < 1.0 and vvix_falling:
+            log['rsi2_dip'] = 'detected'
+            return 8
+    except:
+        pass
 
-# === [3] 전문가 로직 (ADL Slope 점수 추가) ===
+    log['rsi2_dip'] = 'none'
+    return 0
+
+# === [3] 전문가 로직 (MACD 4-Zone Matrix 적용) ===
 def analyze_expert_logic(d):
     if d['price'] > d['ma50'] and d['price'] > d['ma200']: season = "SUMMER"
     elif d['price'] < d['ma50'] and d['price'] > d['ma200']: season = "AUTUMN"
     elif d['price'] < d['ma50'] and d['price'] < d['ma200']: season = "WINTER"
     else: season = "SPRING"
     
-    score = 0; log = {}
+    score = 0
+    log = {}
     
-    # VIX Ratio
-    vix_ratio = d['vix'] / d['vix3m'] if d['vix3m'] else 1.0
-    if vix_ratio > 1.0: score -= 10; log['term'] = 'backwardation'
-    elif vix_ratio < 0.9: score += 3; log['term'] = 'contango'
-    else: log['term'] = 'normal'
+    # 1. VIX Term Structure
+    vix_ratio = 1.0
+    if d['vix3m'] and d['vix3m'] > 0:
+        vix_ratio = d['vix'] / d['vix3m']
+    
+    if vix_ratio > 1.0:
+        score += -10
+        log['term'] = 'backwardation'
+    elif vix_ratio < 0.9:
+        score += 3
+        log['term'] = 'contango'
+    else:
+        score += 0
+        log['term'] = 'normal'
+    
     log['vix_ratio'] = vix_ratio
 
-    # RSI Logic
+    # 2. RSI Logic
+    hist_rsi = d['hist']['RSI']
     curr_rsi = d['rsi']
-    if curr_rsi < 30: score += 5 if season=="SUMMER" else 4; log['rsi']='under'
-    elif curr_rsi >= 70: score -= 1 if season=="SUMMER" else 3; log['rsi']='over'
-    else: log['rsi']='neutral'
+    days_since_escape = 0
+    is_escape_mode = False
 
-    # VIX Level
-    if d['vix'] > 35: score -= 5; log['vix']='panic'
-    elif d['vix'] < 20: score += 2 if season=="SUMMER" else 0; log['vix']='stable'
-    else: score -= 3; log['vix']='fear'
+    if curr_rsi >= 30:
+        for i in range(1, 10):
+            check_idx = -1 - i
+            if abs(check_idx) > len(hist_rsi): break
+            if hist_rsi.iloc[check_idx] < 30:
+                days_since_escape = i
+                is_escape_mode = True
+                break
+    
+    if curr_rsi < 30:
+        pts = 5 if season == "SUMMER" else 4 if season == "AUTUMN" or season == "SPRING" else 0
+        score += pts
+        log['rsi'] = 'under'
+    elif is_escape_mode and days_since_escape <= 7:
+        score_map = {1: 3, 2: 4, 3: 5, 4: 4, 5: 3, 6: 2, 7: 1}
+        pts = score_map.get(days_since_escape, 0)
+        score += pts
+        log['rsi'] = f'escape_day_{days_since_escape}'
+    elif curr_rsi >= 70:
+        pts = -1 if season == "SUMMER" else -3 if season == "AUTUMN" else -10 if season == "WINTER" else -2
+        score += pts
+        log['rsi'] = 'over'
+    else:
+        pts = 1 if season == "SUMMER" or season == "SPRING" else 0 if season == "AUTUMN" else -1
+        score += pts
+        log['rsi'] = 'neutral'
 
-    # Bollinger Z-Score
-    num = d['price'] - d['ma20']
-    den = (d['bb_upper'] - d['ma20']) / 2.0
-    z = 0 if den==0 else num/den
-    log['z_score'] = z
-    if z > 1.8: score -= 3; log['bb']='overbought'
-    elif z < -1.8: score += 2; log['bb']='oversold'
-    elif 0.5 < z <= 1.8: score += 1; log['bb']='uptrend'
-    else: log['bb']='neutral'
-
-    # Trend
-    if d['price'] > d['ma20']: score += 2; log['trend']='up'
-    else: log['trend']='down'
-
-    # Volume
-    if d['volume'] > d['vol_ma20']*1.5: score += 2; log['vol']='explode'
-    else: log['vol']='normal'
-
-    # MACD
-    if d['macd'] > d['signal']: score += 3 if d['macd'] >=0 else 0; log['macd']='golden'
-    else: score -= 3 if d['macd'] >=0 else 5; log['macd']='dead'
-
-    # [신규 추가] ADL 5MA Slope Logic
-    # 최근 ADL Slope가 양수면 가산점, 음수면 감점
-    try:
-        adl_slope = d['hist']['ADL_Slope'].iloc[-1]
-        log['adl_slope'] = adl_slope
-        if adl_slope > 0:
-            score += 2 # 자금 유입 가속
-            log['adl_status'] = 'accumulation'
+    # 3. VIX Level Logic
+    if d['vix'] > 35:
+        if d['vix'] < d['vix_prev']:
+            pts = 7 if season == "WINTER" else 0
+            score += pts
+            log['vix'] = 'peak_out'
         else:
-            score -= 2 # 자금 이탈 가속
-            log['adl_status'] = 'distribution'
-    except:
-        log['adl_status'] = 'none'
+            pts = -5 if season == "WINTER" else -6 if season == "AUTUMN" else -5
+            score += pts
+            log['vix'] = 'panic_rise'
+    elif d['vix'] < 20:
+        pts = 2 if season == "SUMMER" else 1 if season == "SPRING" else -2 if season == "WINTER" else 0
+        score += pts
+        log['vix'] = 'stable'
+    elif 20 <= d['vix'] <= 35:
+        pts = 2 if season == "WINTER" else -1 if season == "SPRING" else -3 if season == "SUMMER" else -4
+        score += pts
+        log['vix'] = 'fear'
+    else:
+        log['vix'] = 'none'
 
-    # Others
-    score += detect_capitulation(d, log)
-    score += detect_vvix_trap(d, log)
-    score += detect_rsi2_dip(d, log)
+    # 4. Bollinger Logic (Z-Score)
+    numerator = d['price'] - d['ma20']
+    denominator = (d['bb_upper'] - d['ma20']) / 2.0
+    
+    if denominator == 0:
+        z_score = 0
+    else:
+        z_score = numerator / denominator
+        
+    log['z_score'] = z_score
+
+    if z_score > 1.8:
+        pts = -3
+        score += pts
+        log['bb'] = 'overbought_danger'
+    elif 0.5 < z_score <= 1.8:
+        pts = 1
+        score += pts
+        log['bb'] = 'uptrend'
+    elif -0.5 <= z_score <= 0.5:
+        pts = 0
+        score += pts
+        log['bb'] = 'neutral'
+    elif -1.8 < z_score < -0.5:
+        pts = 2
+        score += pts
+        log['bb'] = 'dip_buying'
+    else: 
+        pts = 1 
+        score += pts
+        log['bb'] = 'oversold_guard'
+
+    # 5. Trend Logic
+    if d['price'] > d['ma20']:
+        pts = 3 if season == "WINTER" or season == "SPRING" else 2
+        score += pts
+        log['trend'] = 'up'
+    else:
+        log['trend'] = 'down'
+
+    # 6. Volume Logic
+    if d['volume'] > d['vol_ma20'] * 1.5:
+        pts = 3 if season == "WINTER" or season == "AUTUMN" else 2
+        score += pts
+        log['vol'] = 'explode'
+    else:
+        log['vol'] = 'normal'
+
+    # 7. MACD Logic (4-Zone Strategy 적용)
+    macd_val = d['macd']
+    signal_val = d['signal']
+    
+    if macd_val > signal_val:
+        if macd_val >= 0:
+            pts = 3
+            score += pts
+            log['macd'] = 'zero_up_golden' 
+        else:
+            pts = 0
+            score += pts
+            log['macd'] = 'zero_down_golden'
+
+    else:
+        if macd_val >= 0:
+            pts = -3
+            score += pts
+            log['macd'] = 'zero_up_dead'
+        else:
+            pts = -5
+            score += pts
+            log['macd'] = 'zero_down_dead'
+
+    # === [신규 항목 점수 누적] ===
+    pts_cap = detect_capitulation(d, log)
+    score += pts_cap
+    
+    pts_vvix = detect_vvix_trap(d, log)
+    score += pts_vvix
+    
+    pts_rsi2 = detect_rsi2_dip(d, log)
+    score += pts_rsi2
 
     return season, score, log
 
-# === [4] 행동 결정 ===
+# === [4] 행동 결정 (수정됨: PCS vs CDS 분기) ===
 def determine_action(score, season, data, log):
-    vix_pct_change = ((data['vix'] - data['vix_prev'])/data['vix_prev'])*100
+    vix_pct_change = ((data['vix'] - data['vix_prev']) / data['vix_prev']) * 100
+    current_vix = data['vix']
     
-    if log.get('term') == 'backwardation': return None, "⛔ 매매 중단 (System Collapse)", "-", "-", "panic", "-", "-"
-    if vix_pct_change > 15.0: return None, "⛔ 매매 중단 (VIX 급등)", "-", "-", "panic", "-", "-"
-    if log.get('vvix_trap') == 'detected': return None, "⛔ 매매 중단 (VVIX Trap)", "-", "-", "panic", "-", "-"
+    # 1. Panic Check
+    if log.get('term') == 'backwardation':
+        return None, "⛔ 매매 중단 (System Collapse)", "-", "-", "panic", "-", "-"
+    if vix_pct_change > 15.0:
+        return None, "⛔ 매매 중단 (VIX 급등)", "-", "-", "panic", "-", "-"
+    if log.get('vvix_trap') == 'detected':
+        return None, "⛔ 매매 중단 (VVIX Trap)", "-", "-", "panic", "-", "-"
     
-    verdict = ""; target=""; stop=""; mid=""; strat_type=""; strat_basis=""
+    # 2. Score Grade & Strategy Selection
+    verdict_text = ""
+    profit_target = ""
+    stop_loss = ""
+    matrix_id = ""
+    target_delta = None
     
-    if score >= 20: verdict="💎💎 극강 추세"; mid="super_strong"; target="100%"; stop="-300%"
-    elif score >= 12: verdict="💎 추세 추종"; mid="strong"; target="75%"; stop="-300%"
-    elif score >= 8: verdict="✅ 표준 대응"; mid="standard"; target="50%"; stop="-200%"
-    elif score >= 5: verdict="⚠️ 속전 속결"; mid="weak"; target="30%"; stop="-150%"
-    else: return None, "🛡️ 진입 보류", "-", "-", "no_entry", "-", "-"
-
-    # CDS vs PCS
-    if data['vix'] < 18.0 and score >= 12:
-        strat_type = "CDS"
-        strat_basis = f"VIX {data['vix']:.1f} (안정) + 점수 {score} (강세) 👉 방향성 추구"
-        t_delta = 0.55
+    # 등급 결정
+    if score >= 20:
+        verdict_text = "💎💎 극강 추세 (Super Strong)"
+        matrix_id = "super_strong"
+        profit_target = "100%+"
+        stop_loss = "-300%"
+    elif score >= 12:
+        verdict_text = "💎 추세 추종 (Strong)"
+        matrix_id = "strong"
+        profit_target = "75%"
+        stop_loss = "-300%"
+    elif 8 <= score < 12:
+        verdict_text = "✅ 표준 대응 (Standard)"
+        matrix_id = "standard"
+        profit_target = "50%"
+        stop_loss = "-200%"
+    elif 5 <= score < 8:
+        verdict_text = "⚠️ 속전 속결 (Hit & Run)"
+        matrix_id = "weak"
+        profit_target = "30%"
+        stop_loss = "-150%"
     else:
-        strat_type = "PCS"
-        strat_basis = f"VIX {data['vix']:.1f} / 점수 {score} 👉 시간가치 확보"
-        t_delta = -0.10
+        verdict_text = "🛡️ 진입 보류"
+        matrix_id = "no_entry"
+        return None, verdict_text, "-", "-", matrix_id, "-", "-"
 
-    return t_delta, verdict, target, stop, mid, strat_type, strat_basis
+    # 3. Strategy Logic (PCS vs CDS)
+    # 전문가 로직:
+    # A. Call Debit Spread (CDS): VIX < 18 (저변동성) AND Score >= 12 (강한 추세)
+    # B. Put Credit Spread (PCS): 그 외 (VIX >= 18 OR Score < 12)
+    
+    strategy_type = ""
+    strategy_basis = ""
 
-# === [5] 옵션 찾기 (생략 - 기존과 동일) ===
+    if current_vix < 18.0 and score >= 12:
+        strategy_type = "CDS"
+        strategy_basis = f"VIX {current_vix:.1f} (저변동성) + 점수 {score} (강세) 👉 방향성 베팅(가성비)"
+        target_delta = 0.55 # CDS는 보통 ATM 근처 매수 (Delta ~0.50-0.60)
+    else:
+        strategy_type = "PCS"
+        if current_vix >= 18.0:
+            strategy_basis = f"VIX {current_vix:.1f} (고변동성) 👉 프리미엄 매도 유리"
+        else:
+            strategy_basis = f"점수 {score} (중립/완만) 👉 시간가치(Theta) 확보 유리"
+        target_delta = -0.10 # PCS는 OTM Put 매도 (Delta -0.10 ~ -0.15)
+
+    return target_delta, verdict_text, profit_target, stop_loss, matrix_id, strategy_type, strategy_basis
+
+# === [5] 옵션 찾기 (수정됨: CDS/PCS 구분) ===
 def calculate_put_delta(S, K, T, r, sigma):
     if T <= 0 or sigma <= 0: return -0.5
-    d1 = (np.log(S/K) + (r + 0.5 * sigma**2)*T) / (sigma*np.sqrt(T))
+    d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
     return norm.cdf(d1) - 1
 
 def calculate_call_delta(S, K, T, r, sigma):
     if T <= 0 or sigma <= 0: return 0.5
-    d1 = (np.log(S/K) + (r + 0.5 * sigma**2)*T) / (sigma*np.sqrt(T))
+    d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
     return norm.cdf(d1)
 
 def find_best_option(price, iv, target_delta, strategy_type):
     if target_delta is None: return None
+    TARGET_DTE_MIN = 45
+    SPREAD_WIDTH = 5
+    
     qqq = yf.Ticker("QQQ")
     try:
         options = qqq.options
-        valid = []
+        valid_dates = []
         now = datetime.now()
-        for d in options:
-            days = (datetime.strptime(d, "%Y-%m-%d") - now).days
-            if days >= 45: valid.append((d, days))
-        if not valid: return None
-        expiry, dte = min(valid, key=lambda x: x[1])
-        T = dte/365.0; r=0.045
+        for d_str in options:
+            d_date = datetime.strptime(d_str, "%Y-%m-%d")
+            days_left = (d_date - now).days
+            if days_left >= TARGET_DTE_MIN:
+                valid_dates.append((d_str, days_left))
         
-        best_k = 0; min_diff = 1.0; found_d = 0
+        if not valid_dates: return None
+        expiry, dte = min(valid_dates, key=lambda x: x[1])
         
+        T = dte / 365.0
+        r = 0.045
+        best_strike = 0
+        min_diff = 1.0
+        found_delta = 0
+        
+        # CDS (Call Debit) vs PCS (Put Credit)
         if strategy_type == "CDS":
-            for k in range(int(price*0.9), int(price*1.1)):
-                d = calculate_call_delta(price, k, T, r, iv)
-                if abs(d - target_delta) < min_diff:
-                    min_diff = abs(d - target_delta); best_k = k; found_d = d
-            return {'type':'CDS', 'expiry':expiry, 'dte':dte, 'long':best_k, 'short':best_k+5, 'delta':found_d, 'width':5}
-        else:
-            for k in range(int(price*0.5), int(price)):
-                d = calculate_put_delta(price, k, T, r, iv)
-                if abs(d - target_delta) < min_diff:
-                    min_diff = abs(d - target_delta); best_k = k; found_d = d
-            return {'type':'PCS', 'expiry':expiry, 'dte':dte, 'short':best_k, 'long':best_k-5, 'delta':found_d, 'width':5}
-    except: return None
+            # CDS: Long Call (Target Delta ~0.55) / Short Call (Higher)
+            # 검색 범위: 현재가 주변 (ATM)
+            start_k = int(price * 0.9)
+            end_k = int(price * 1.1)
+            
+            for strike in range(start_k, end_k):
+                d = calculate_call_delta(price, strike, T, r, iv)
+                diff = abs(d - target_delta)
+                if diff < min_diff:
+                    min_diff = diff
+                    best_strike = strike
+                    found_delta = d
+            
+            long_strike = best_strike
+            short_strike = best_strike + SPREAD_WIDTH
+            return {
+                'type': 'CDS',
+                'expiry': expiry, 'dte': dte,
+                'long': long_strike, 'short': short_strike,
+                'delta': found_delta,
+                'width': SPREAD_WIDTH
+            }
+            
+        else: # PCS
+            # PCS: Short Put (Target Delta ~-0.10) / Long Put (Lower)
+            start_k = int(price * 0.5)
+            end_k = int(price)
+            
+            for strike in range(start_k, end_k):
+                d = calculate_put_delta(price, strike, T, r, iv)
+                diff = abs(d - target_delta)
+                if diff < min_diff:
+                    min_diff = diff
+                    best_strike = strike
+                    found_delta = d
+            
+            short_strike = best_strike
+            long_strike = best_strike - SPREAD_WIDTH
+            return {
+                'type': 'PCS',
+                'expiry': expiry, 'dte': dte,
+                'short': short_strike, 'long': long_strike,
+                'delta': found_delta,
+                'width': SPREAD_WIDTH
+            }
 
-# === [6] 차트 생성 (수정됨: ADL Momentum Chart 추가) ===
+    except Exception as e:
+        print(f"Option Search Error: {e}")
+        return None
+
+# === [6] 차트 (11개 서브플롯) - 수정됨: ADL Overlay Jaws + Divergence 추가 ===
 def create_charts(data):
-    hist = data['hist'].copy()
+    hist = data['hist'].copy()  # 원본 데이터 보호를 위해 복사
     
-    # Season Color logic
-    conds = [
-        (hist['Close']>hist['MA50'])&(hist['Close']>hist['MA200']),
-        (hist['Close']<hist['MA50'])&(hist['Close']>hist['MA200']),
-        (hist['Close']<hist['MA50'])&(hist['Close']<hist['MA200'])
-    ]
+    # === [배경색 로직] 4계절 계산 ===
+    cond_summer = (hist['Close'] > hist['MA50']) & (hist['Close'] > hist['MA200'])
+    cond_autumn = (hist['Close'] < hist['MA50']) & (hist['Close'] > hist['MA200'])
+    cond_winter = (hist['Close'] < hist['MA50']) & (hist['Close'] < hist['MA200'])
+    # Spring은 나머지 경우
+    
+    conditions = [cond_summer, cond_autumn, cond_winter]
     choices = ['SUMMER', 'AUTUMN', 'WINTER']
-    hist['Season'] = np.select(conds, choices, default='SPRING')
-    s_colors = {'SUMMER':'#FFEBEE', 'AUTUMN':'#FFF3E0', 'WINTER':'#E3F2FD', 'SPRING':'#E8F5E9'}
     
-    # Figure Layout: 12 Rows now (Added ADL Slope Chart)
-    fig = plt.figure(figsize=(10, 36))
-    gs = fig.add_gridspec(12, 1, height_ratios=[2, 0.6, 1.5, 1, 1, 1, 1, 1, 1, 1, 1, 1.5])
+    # 'Season' 컬럼 생성 (기본값 SPRING)
+    hist['Season'] = np.select(conditions, choices, default='SPRING')
     
-    # 1. Price
+    # 시즌별 배경 색상 설정 (파스텔 톤)
+    season_colors = {
+        'SUMMER': '#FFEBEE',  # 연한 붉은색 (상승확산)
+        'AUTUMN': '#FFF3E0',  # 연한 주황색 (조정)
+        'WINTER': '#E3F2FD',  # 연한 파란색 (하락)
+        'SPRING': '#E8F5E9'   # 연한 초록색 (회복)
+    }
+    
+    # === 차트 그리기 시작 ===
+    # 높이를 늘리고 11행으로 변경 (ADL Jaws 추가됨)
+    fig = plt.figure(figsize=(10, 33))
+    # 높이 비율 조정: [10] ADL Overlay (1.5) 추가
+    gs = fig.add_gridspec(11, 1, height_ratios=[2, 0.6, 1.5, 1, 1, 1, 1, 1, 1, 1, 1.5])
+    
+    # 1. Price Chart (Main) - Index 0
     ax1 = fig.add_subplot(gs[0])
-    ax1.plot(hist.index, hist['Close'], color='black', alpha=0.9, label='QQQ')
-    ax1.plot(hist.index, hist['MA20'], color='green', ls='--', lw=1)
-    ax1.plot(hist.index, hist['MA50'], color='blue', lw=1.5)
-    ax1.plot(hist.index, hist['MA200'], color='red', lw=2)
-    ax1.fill_between(hist.index, hist['BB_Upper'], hist['BB_Lower'], color='gray', alpha=0.1)
-    ax1.set_title('QQQ Price Trend', fontsize=12, fontweight='bold')
+    
+    # 기존 라인 플롯 (zorder 설정 유지)
+    ax1.plot(hist.index, hist['Close'], label='QQQ', color='black', alpha=0.9, zorder=2)
+    ax1.plot(hist.index, hist['MA20'], label='20MA', color='green', ls='--', lw=1, zorder=2)
+    ax1.plot(hist.index, hist['MA50'], label='50MA', color='blue', ls='-', lw=1.5, zorder=2)
+    ax1.plot(hist.index, hist['MA200'], label='200MA', color='red', ls='-', lw=2, zorder=2)
+    ax1.fill_between(hist.index, hist['BB_Upper'], hist['BB_Lower'], color='gray', alpha=0.1, label='Bollinger', zorder=1)
+    
+    ax1.set_title('QQQ Price Trend with Market Seasons', fontsize=12, fontweight='bold')
+    ax1.legend(loc='upper left')
+    ax1.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax1.get_xticklabels(), visible=False)
 
-    # 2. Volume
+    # 2. Volume (Moved to 2nd position) - Index 1
     ax_vol = fig.add_subplot(gs[1], sharex=ax1)
-    c = ['red' if c<o else 'green' for c,o in zip(hist['Close'], hist['Open'])]
-    ax_vol.bar(hist.index, hist['Volume'], color=c, alpha=0.5)
-    ax_vol.plot(hist.index, hist['Vol_MA20'], color='black', lw=1)
+    colors = ['red' if c < o else 'green' for c, o in zip(hist['Close'], hist['Open'])]
+    ax_vol.bar(hist.index, hist['Volume'], color=colors, alpha=0.5, zorder=2)
+    ax_vol.plot(hist.index, hist['Vol_MA20'], color='black', lw=1, zorder=2)
+    ax_vol.set_title(f"Volume ({data['vol_pct']:.1f}%)", fontsize=10, fontweight='bold')
+    ax_vol.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_vol.get_xticklabels(), visible=False)
+    
+    # 3. QQQ Trend Graph (Moved to 3rd position) - Index 2
+    # 배경: MACD 데드크로스(MACD < Signal) 구간을 다른 색으로 표시
+    ax_trend = fig.add_subplot(gs[2], sharex=ax1)
+    ax_trend.plot(hist.index, hist['Close'], label='QQQ', color='black', alpha=0.8, zorder=2)
+    ax_trend.plot(hist.index, hist['MA20'], label='20MA', color='green', ls='--', lw=1, zorder=2)
+    ax_trend.plot(hist.index, hist['MA50'], label='50MA', color='blue', ls='-', lw=1, zorder=2)
+    
+    # MACD 데드크로스(MACD < Signal) 구간 배경 칠하기
+    dead_cross_mask = hist['MACD'] < hist['Signal']
+    # 그룹화하여 연속된 구간 찾기
+    hist['dc_group'] = (dead_cross_mask != dead_cross_mask.shift()).cumsum()
+    
+    for _, group in hist[dead_cross_mask].groupby('dc_group'):
+        start = group.index[0]
+        end = group.index[-1]
+        # Light Red/Pink color specifically for Dead Cross
+        ax_trend.axvspan(start, end, color='#FFCDD2', alpha=0.4, zorder=0, label='MACD < Signal (Dead)')
 
-    # 3. Trend Check
-    ax_tr = fig.add_subplot(gs[2], sharex=ax1)
-    ax_tr.plot(hist.index, hist['Close'], color='black', alpha=0.8)
-    ax_tr.plot(hist.index, hist['MA50'], color='blue')
-    # MACD Dead Zone
-    mask = hist['MACD'] < hist['Signal']
-    hist['dc_grp'] = (mask != mask.shift()).cumsum()
-    for _, g in hist[mask].groupby('dc_grp'):
-        ax_tr.axvspan(g.index[0], g.index[-1], color='#FFCDD2', alpha=0.4)
-    ax_tr.set_title('Trend Check (Red Zone: MACD Dead)', fontsize=10, fontweight='bold')
-    plt.setp(ax_tr.get_xticklabels(), visible=False)
+    # 중복 라벨 제거를 위한 범례 처리
+    handles, labels = ax_trend.get_legend_handles_labels()
+    by_label = dict(zip(labels, handles))
+    ax_trend.legend(by_label.values(), by_label.keys(), loc='upper left')
+    
+    ax_trend.set_title('QQQ Trend Check (Background: MACD Dead Cross)', fontsize=10, fontweight='bold')
+    ax_trend.grid(True, alpha=0.3, zorder=1)
+    plt.setp(ax_trend.get_xticklabels(), visible=False)
 
-    # 4. VIX Absolute
-    ax_vx = fig.add_subplot(gs[3], sharex=ax1)
-    ax_vx.plot(data['vix_hist'].index, data['vix_hist']['Close'], color='purple', label='VIX')
-    if data['vix3m_hist'] is not None:
-        ax_vx.plot(data['vix3m_hist'].index, data['vix3m_hist']['Close'], color='gray', ls=':', label='VIX3M')
-    ax_vx.axhline(20, color='green', ls='--'); ax_vx.axhline(35, color='red', ls='--')
-    ax_vx.legend(loc='upper right')
-    plt.setp(ax_vx.get_xticklabels(), visible=False)
+    # 4. VIX Level (Absolute) - Index 3
+    ax_vix_abs = fig.add_subplot(gs[3], sharex=ax1)
+    ax_vix_abs.plot(data['vix_hist'].index, data['vix_hist']['Close'], color='purple', label='VIX (Spot)', zorder=2)
+    if data['vix3m_hist'] is not None and not data['vix3m_hist'].empty:
+          ax_vix_abs.plot(data['vix3m_hist'].index, data['vix3m_hist']['Close'], color='gray', ls=':', label='VIX3M', zorder=2)
+    
+    ax_vix_abs.axhline(35, color='red', ls='--', zorder=2)
+    ax_vix_abs.axhline(20, color='green', ls='--', zorder=2)
+    ax_vix_abs.set_title('VIX vs VIX3M (Absolute Level)', fontsize=12, fontweight='bold')
+    ax_vix_abs.legend(loc='upper right')
+    ax_vix_abs.grid(True, alpha=0.3, zorder=1)
+    plt.setp(ax_vix_abs.get_xticklabels(), visible=False)
 
-    # 5. VIX Ratio
-    ax_rt = fig.add_subplot(gs[4], sharex=ax1)
-    if data['vix_term_df'] is not None:
-        df_t = data['vix_term_df']
-        ax_rt.plot(df_t.index, df_t['Ratio'], color='black')
-        ax_rt.axhline(1.0, color='red', ls='--')
-        ax_rt.fill_between(df_t.index, df_t['Ratio'], 1.0, where=(df_t['Ratio']>1), color='red', alpha=0.2)
-        ax_rt.fill_between(df_t.index, df_t['Ratio'], 1.0, where=(df_t['Ratio']<=1), color='green', alpha=0.2)
-    plt.setp(ax_rt.get_xticklabels(), visible=False)
+    # 5. VIX Term Structure (Ratio) - Index 4
+    ax_ratio = fig.add_subplot(gs[4], sharex=ax1)
+    term_data = data.get('vix_term_df')
+    
+    if term_data is not None and not term_data.empty:
+        ax_ratio.plot(term_data.index, term_data['Ratio'], color='black', lw=1.2, label='Ratio (VIX/VIX3M)', zorder=2)
+        ax_ratio.axhline(1.0, color='red', ls='--', alpha=0.8, lw=1.5, label='Threshold (1.0)', zorder=2)
+        
+        ax_ratio.fill_between(term_data.index, term_data['Ratio'], 1.0, 
+                             where=(term_data['Ratio'] > 1.0), 
+                             color='red', alpha=0.2, interpolate=True, label='Danger (Back.)', zorder=1)
+        
+        ax_ratio.fill_between(term_data.index, term_data['Ratio'], 1.0, 
+                             where=(term_data['Ratio'] <= 1.0), 
+                             color='green', alpha=0.15, interpolate=True, label='Safe (Contango)', zorder=1)
+        
+        ax_ratio.fill_between(term_data.index, term_data['Ratio'], 0.9, 
+                             where=(term_data['Ratio'] < 0.9), 
+                             color='green', alpha=0.3, interpolate=True, label='Super Contango', zorder=1)
+        
+        ax_ratio.legend(loc='upper right', fontsize=8)
+    else:
+        ax_ratio.text(0.5, 0.5, "데이터 부족 (Data Insufficient)", transform=ax_ratio.transAxes, ha='center', color='red', zorder=2)
+        
+    ax_ratio.set_title('VIX Term Structure (Ratio = VIX / VIX3M)', fontsize=12, fontweight='bold')
+    ax_ratio.grid(True, alpha=0.3, zorder=1)
+    plt.setp(ax_ratio.get_xticklabels(), visible=False)
 
-    # 6. RSI
-    ax_rs = fig.add_subplot(gs[5], sharex=ax1)
-    ax_rs.plot(hist.index, hist['RSI'], color='purple')
-    ax_rs.axhline(70, color='red', ls='--'); ax_rs.axhline(30, color='green', ls='--')
-    plt.setp(ax_rs.get_xticklabels(), visible=False)
+    # 6. RSI(14) - Index 5
+    ax_rsi = fig.add_subplot(gs[5], sharex=ax1)
+    ax_rsi.plot(hist.index, hist['RSI'], color='purple', label='RSI(14)', zorder=2)
+    ax_rsi.axhline(70, color='red', ls='--', alpha=0.7, zorder=2)
+    ax_rsi.axhline(30, color='green', ls='--', alpha=0.7, zorder=2)
+    ax_rsi.fill_between(hist.index, hist['RSI'], 70, where=(hist['RSI'] >= 70), color='red', alpha=0.3, zorder=1)
+    ax_rsi.fill_between(hist.index, hist['RSI'], 30, where=(hist['RSI'] <= 30), color='green', alpha=0.3, zorder=1)
+    ax_rsi.set_ylim(0, 100)
+    ax_rsi.set_title('RSI (14)', fontsize=12, fontweight='bold')
+    ax_rsi.grid(True, alpha=0.3, zorder=1)
+    plt.setp(ax_rsi.get_xticklabels(), visible=False)
 
-    # 7. MACD
-    ax_mc = fig.add_subplot(gs[6], sharex=ax1)
-    ax_mc.plot(hist.index, hist['MACD'], color='blue')
-    ax_mc.plot(hist.index, hist['Signal'], color='orange')
-    ax_mc.bar(hist.index, hist['MACD']-hist['Signal'], color='gray', alpha=0.3)
-    ax_mc.axhline(0, color='black', lw=0.8)
-    plt.setp(ax_mc.get_xticklabels(), visible=False)
-
-    # 8. VVIX/VIX Ratio
-    ax_vr = fig.add_subplot(gs[7], sharex=ax1)
+    # 7. MACD - Index 6
+    ax2 = fig.add_subplot(gs[6], sharex=ax1)
+    ax2.plot(hist.index, hist['MACD'], label='MACD', color='blue', zorder=2)
+    ax2.plot(hist.index, hist['Signal'], label='Signal', color='orange', zorder=2)
+    ax2.bar(hist.index, hist['MACD']-hist['Signal'], color='gray', alpha=0.3, zorder=2)
+    ax2.axhline(0, color='black', lw=0.8, zorder=2)
+    ax2.set_title('MACD', fontsize=12, fontweight='bold')
+    ax2.grid(True, alpha=0.3, zorder=1)
+    plt.setp(ax2.get_xticklabels(), visible=False)
+    
+    # 8. VVIX / VIX Ratio - Index 7
+    ax_ratio_vvix = fig.add_subplot(gs[7], sharex=ax1)
     try:
-        df_v = data['vix_hist'][['Close']]; df_vv = data['vvix_hist'][['Close']]
+        df_v = data['vix_hist'][['Close']].copy()
+        df_vv = data['vvix_hist'][['Close']].copy()
         df_v.index = df_v.index.tz_localize(None).normalize()
         df_vv.index = df_vv.index.tz_localize(None).normalize()
-        m = pd.merge(df_v, df_vv, left_index=True, right_index=True, suffixes=('_V', '_VV'))
-        m['R'] = m['Close_VV']/m['Close_V']
-        ax_vr.plot(m.index, m['R'], color='#333'); ax_vr.axhline(7, color='red', ls=':'); ax_vr.axhline(4, color='green', ls=':')
-    except: pass
-    plt.setp(ax_vr.get_xticklabels(), visible=False)
-
-    # 9. RSI(2)
-    ax_r2 = fig.add_subplot(gs[8], sharex=ax1)
-    ax_r2.plot(hist.index, hist['RSI_2'], color='gray')
-    ax_r2.axhline(10, color='green', ls='--'); ax_r2.axhline(90, color='red', ls='--')
-    plt.setp(ax_r2.get_xticklabels(), visible=False)
-
-    # 10. ADL Raw
-    ax_ad = fig.add_subplot(gs[9], sharex=ax1)
-    if 'ADL' in hist.columns:
-        ax_ad.plot(hist.index, hist['ADL'], color='black', lw=1.5, label='ADL')
-        ax_ad.plot(hist.index, hist['ADL_MA5'], color='orange', ls='--', lw=1, label='5MA')
-        ax_ad.set_title('ADL (Accumulation/Distribution)', fontsize=10, fontweight='bold')
-        ax_ad.legend(loc='upper left')
-    plt.setp(ax_ad.get_xticklabels(), visible=False)
-
-    # [신규] 11. ADL 5MA Slope (Momentum) - Index 10
-    ax_sl = fig.add_subplot(gs[10], sharex=ax1)
-    if 'ADL_Slope' in hist.columns:
-        # 0보다 크면 Green, 작으면 Red
-        cols = ['green' if x > 0 else 'red' for x in hist['ADL_Slope']]
-        ax_sl.bar(hist.index, hist['ADL_Slope'], color=cols, alpha=0.7)
-        ax_sl.axhline(0, color='black', lw=0.8)
-        ax_sl.set_title('ADL 5MA Slope (Money Flow Velocity)', fontsize=10, fontweight='bold')
-    else:
-        ax_sl.text(0.5, 0.5, "No ADL Slope Data", transform=ax_sl.transAxes, ha='center')
-    plt.setp(ax_sl.get_xticklabels(), visible=False)
-
-    # 12. Jaws - Index 11
-    ax_jw = fig.add_subplot(gs[11], sharex=ax1)
-    if 'ADL' in hist.columns:
-        def norm(s): return (s-s.min())/(s.max()-s.min())
-        np_p = norm(hist['Close']); np_a = norm(hist['ADL'])
-        ax_jw.plot(hist.index, np_p, color='black', lw=1.5, label='Price')
-        ax_jw.plot(hist.index, np_a, color='blue', alpha=0.6, label='ADL')
-        ax_jw.fill_between(hist.index, np_p, np_a, where=(np_p>np_a), color='red', alpha=0.3, label='Div')
         
-        # Bearish Div Logic
-        pks = argrelextrema(hist['Close'].values, np.greater, order=5)[0]
-        dx=[]; dy=[]; dlines=[]
-        for i in range(1, len(pks)):
-            p = pks[i-1]; c = pks[i]
-            if hist['Close'].iloc[c] > hist['Close'].iloc[p] and hist['ADL'].iloc[c] < hist['ADL'].iloc[p]:
-                dx.append(hist.index[c]); dy.append(np_p.iloc[c]); dlines.append((p, c))
-        if dx: ax_jw.scatter(dx, dy, color='red', marker='v', s=100, zorder=5)
-        for p, c in dlines:
-            ax_jw.plot([hist.index[p], hist.index[c]], [np_p.iloc[p], np_p.iloc[c]], color='green', ls='--')
-            ax_jw.plot([hist.index[p], hist.index[c]], [np_a.iloc[p], np_a.iloc[c]], color='red', ls='--')
-            
-        ax_jw.set_title('Jaws Divergence', fontsize=10, fontweight='bold')
+        merged_ratio = pd.merge(df_v, df_vv, left_index=True, right_index=True, suffixes=('_VIX', '_VVIX'))
+        merged_ratio['Ratio'] = merged_ratio['Close_VVIX'] / merged_ratio['Close_VIX']
+        
+        if not merged_ratio.empty:
+            ax_ratio_vvix.plot(merged_ratio.index, merged_ratio['Ratio'], color='#333333', lw=1.2, label='VVIX/VIX Ratio', zorder=2)
+            ax_ratio_vvix.axhline(7.0, color='red', ls=':', alpha=0.5, zorder=2)
+            ax_ratio_vvix.axhline(4.0, color='green', ls=':', alpha=0.5, zorder=2)
+            ax_ratio_vvix.axhline(5.5, color='gray', ls='--', alpha=0.5, lw=0.8, zorder=2)
+            ax_ratio_vvix.fill_between(merged_ratio.index, merged_ratio['Ratio'], 7.0, 
+                                     where=(merged_ratio['Ratio'] > 7.0), color='red', alpha=0.2, label='Complacency', zorder=1)
+            ax_ratio_vvix.fill_between(merged_ratio.index, merged_ratio['Ratio'], 4.0, 
+                                     where=(merged_ratio['Ratio'] < 4.0), color='green', alpha=0.2, label='Panic', zorder=1)
+            ax_ratio_vvix.legend(loc='upper left', fontsize=8)
+        else:
+            ax_ratio_vvix.text(0.5, 0.5, "No Data", transform=ax_ratio_vvix.transAxes, ha='center', zorder=2)
+    except Exception as e:
+        ax_ratio_vvix.text(0.5, 0.5, f"Error: {e}", transform=ax_ratio_vvix.transAxes, ha='center', color='red', zorder=2)
+
+    ax_ratio_vvix.set_title('VVIX / VIX Ratio', fontsize=12, fontweight='bold')
+    ax_ratio_vvix.grid(True, alpha=0.3, zorder=1)
+    plt.setp(ax_ratio_vvix.get_xticklabels(), visible=False)
+
+    # 9. RSI(2) - Index 8
+    ax_rsi2 = fig.add_subplot(gs[8], sharex=ax1)
+    ax_rsi2.plot(hist.index, hist['RSI_2'], color='gray', label='RSI(2)', linewidth=1.2, zorder=2)
+    ax_rsi2.axhline(10, color='green', linestyle='--', alpha=0.7, zorder=2)
+    ax_rsi2.axhline(90, color='red', linestyle='--', alpha=0.7, zorder=2)
+    ax_rsi2.fill_between(hist.index, hist['RSI_2'], 10, where=(hist['RSI_2'] < 10), color='green', alpha=0.3, label='Buy Zone', zorder=1)
+    ax_rsi2.fill_between(hist.index, hist['RSI_2'], 90, where=(hist['RSI_2'] > 90), color='red', alpha=0.3, label='Danger', zorder=1)
+    ax_rsi2.scatter(hist.index[-1], hist['RSI_2'].iloc[-1], color='red', s=50, zorder=5)
+    ax_rsi2.set_ylim(0, 100)
+    ax_rsi2.set_title('RSI(2) - Short-term Pullback', fontsize=12, fontweight='bold')
+    ax_rsi2.legend(loc='upper right')
+    ax_rsi2.grid(True, alpha=0.3, zorder=1)
+    plt.setp(ax_rsi2.get_xticklabels(), visible=False)
+
+    # 10. ADL (Advance-Decline Line) - Index 9
+    ax_adl = fig.add_subplot(gs[9], sharex=ax1)
     
-    # Background coloring
-    hist['grp'] = (hist['Season']!=hist['Season'].shift()).cumsum()
-    axes_bg = [ax1, ax_vol, ax_vx, ax_rt, ax_rs, ax_mc, ax_vr, ax_r2, ax_ad, ax_sl, ax_jw]
-    for ax in axes_bg:
-        for _, g in hist.groupby('grp'):
-            ax.axvspan(g.index[0], g.index[-1], color=s_colors[g['Season'].iloc[0]], alpha=0.4, zorder=0)
+    if 'ADL' in hist.columns and not hist['ADL'].isna().all():
+        ax_adl.plot(hist.index, hist['ADL'], color='black', label='ADL (Breath)', linewidth=1.5, zorder=2)
+        ax_adl.plot(hist.index, hist['ADL_MA20'], color='orange', ls='--', label='ADL 20MA', linewidth=1, zorder=2)
+        
+        if not hist['ADL'].empty:
+            last_adl = hist['ADL'].iloc[-1]
+            ax_adl.text(hist.index[-1], last_adl, f"{last_adl:.0f}", 
+                        color='black', fontsize=9, fontweight='bold', ha='left', va='center')
+        
+        ax_adl.axhline(0, color='gray', ls=':', alpha=0.5, zorder=1)
+        ax_adl.set_title('Advance-Decline Line (Raw)', fontsize=12, fontweight='bold')
+        ax_adl.legend(loc='upper left')
+        
+    else:
+        ax_adl.text(0.5, 0.5, "⚠️ ADL Data Not Available", 
+                   transform=ax_adl.transAxes, ha='center', va='center', 
+                   fontsize=12, color='red', fontweight='bold')
+        ax_adl.set_title('Advance-Decline Line (No Data)', fontsize=12, fontweight='bold')
+
+    ax_adl.grid(True, alpha=0.3, zorder=1)
+    plt.setp(ax_adl.get_xticklabels(), visible=False)
+
+    # [신규 수정] 11. Market Breadth Divergence (The Jaws with Bearish Div.) - Index 10
+    ax_jaws = fig.add_subplot(gs[10], sharex=ax1)
+    
+    if 'ADL' in hist.columns and not hist['ADL'].isna().all():
+        # 데이터 정규화 (0~1 Scaling)
+        def normalize_series(s):
+            return (s - s.min()) / (s.max() - s.min())
+        
+        norm_price = normalize_series(hist['Close'])
+        norm_adl = normalize_series(hist['ADL'])
+        
+        # Plotting
+        ax_jaws.plot(hist.index, norm_price, color='black', lw=1.5, label='Price (Norm)', zorder=2)
+        ax_jaws.plot(hist.index, norm_adl, color='blue', alpha=0.6, lw=1.5, label='ADL (Norm)', zorder=2)
+        
+        # Jaws Effect (Divergence = Red, Healthy = Green)
+        ax_jaws.fill_between(hist.index, norm_price, norm_adl, 
+                             where=(norm_price > norm_adl), 
+                             color='red', alpha=0.3, label='🐊 Jaws Opening (Div.)', zorder=1)
+        
+        ax_jaws.fill_between(hist.index, norm_price, norm_adl, 
+                             where=(norm_price <= norm_adl), 
+                             color='green', alpha=0.1, label='🤝 Parallel/Healthy', zorder=1)
+        
+        # --- [추가됨] Bearish Divergence Detection ---
+        # 1. 고점(Peaks) 탐지 (order=5: 좌우 5일, 총 11일 구간 최고점)
+        order = 5
+        peaks = argrelextrema(hist['Close'].values, np.greater, order=order)[0]
+        
+        div_x = []
+        div_y = []
+        div_lines = []
+
+        # 2. Divergence 로직: 주가는 더 높은데, ADL은 더 낮을 때
+        for i in range(1, len(peaks)):
+            prev = peaks[i-1]
+            curr = peaks[i]
+            
+            # 주가 상승 (Higher High)
+            if hist['Close'].iloc[curr] > hist['Close'].iloc[prev]:
+                # ADL 하락 (Lower High)
+                if hist['ADL'].iloc[curr] < hist['ADL'].iloc[prev]:
+                    # 다이버전스 포착
+                    div_x.append(hist.index[curr])
+                    div_y.append(norm_price.iloc[curr]) # 정규화된 차트에 표시해야 함
+                    div_lines.append((prev, curr))
+        
+        # 3. 시각화: 마커 및 연결선
+        if div_x:
+            ax_jaws.scatter(div_x, div_y, color='red', marker='v', s=100, zorder=5, label='Bearish Div. Signal')
+        
+        for prev, curr in div_lines:
+            # 주가 상승 궤적 (초록 점선)
+            ax_jaws.plot([hist.index[prev], hist.index[curr]], 
+                         [norm_price.iloc[prev], norm_price.iloc[curr]], 
+                         color='green', ls='--', alpha=0.5, lw=1)
+            # ADL 하락 궤적 (빨강 점선)
+            ax_jaws.plot([hist.index[prev], hist.index[curr]], 
+                         [norm_adl.iloc[prev], norm_adl.iloc[curr]], 
+                         color='red', ls='--', alpha=0.5, lw=1)
+
+        ax_jaws.set_title('Market Breadth Divergence (Red Marker = Bearish Divergence)', fontsize=12, fontweight='bold')
+        ax_jaws.legend(loc='upper left')
+        ax_jaws.set_ylim(-0.05, 1.05)
+    
+    else:
+        ax_jaws.text(0.5, 0.5, "Insufficient Data for Jaws", transform=ax_jaws.transAxes, ha='center', color='red')
+        ax_jaws.set_title('Jaws Strategy (No Data)', fontsize=12, fontweight='bold')
+        
+    ax_jaws.grid(True, alpha=0.3, zorder=1)
+    ax_jaws.set_xlabel('Date', fontsize=10)
+
+    # === [모든 서브플롯에 배경색 일괄 적용] ===
+    # 배경색 칠하기를 위한 그룹화 (연속된 구간 찾기)
+    hist['group'] = (hist['Season'] != hist['Season'].shift()).cumsum()
+    
+    # 모든 axes를 리스트로 묶음 (Trend 차트는 제외 - 별도 MACD 배경 적용됨)
+    # 순서: Price, Volume, Trend(X), VIX_Abs, Ratio, RSI, MACD, Ratio_VVIX, RSI2, ADL, Jaws
+    all_axes_except_trend = [ax1, ax_vol, ax_vix_abs, ax_ratio, ax_rsi, ax2, ax_ratio_vvix, ax_rsi2, ax_adl, ax_jaws]
+    
+    # 반복문으로 차트에 계절 배경색 적용 (Trend 차트 제외)
+    for ax in all_axes_except_trend:
+        for _, group_data in hist.groupby('group'):
+            season = group_data['Season'].iloc[0]
+            start_date = group_data.index[0]
+            end_date = group_data.index[-1]
+            # zorder=0으로 설정하여 모든 데이터(라인, 바, 그리드 등) 뒤에 배경이 오도록 함
+            # alpha=0.4로 설정하여 가시성 확보
+            ax.axvspan(start_date, end_date, color=season_colors[season], alpha=0.4, zorder=0)
 
     plt.tight_layout()
     return fig
 
-# === [Main] ===
+# === [메인 화면] ===
 def main():
-    st.title("🦅 HK Advisory (Grand Master v22.6 - ADL Momentum)")
-    st.caption("Logic: MACD 4-Zone & Jaws Divergence & ADL 5MA Slope")
+    st.title("🦅 HK Advisory (Grand Master v22.5 - Jaws Divergence)")
+    st.caption(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Logic: MACD 4-Zone & Jaws Bearish Divergence")
 
-    with st.spinner('Calculating...'):
+    with st.spinner('시장 구조 분석 및 전략 최적화 중...'):
         try:
             data = get_market_data()
             season, score, log = analyze_expert_logic(data)
-            delta, verdict, tgt, stop, mid, st_type, st_basis = determine_action(score, season, data, log)
-            opt = find_best_option(data['price'], data['iv'], delta, st_type)
+            # return 값 추가됨 (strategy_type, strategy_basis)
+            target_delta, verdict_text, profit_target, stop_loss, matrix_id, strat_type, strat_basis = determine_action(score, season, data, log)
+            # find_best_option에 strat_type 전달
+            strategy = find_best_option(data['price'], data['iv'], target_delta, strat_type)
         except Exception as e:
-            st.error(f"Error: {e}"); return
+            st.error(f"오류 발생: {e}")
+            import traceback
+            st.text(traceback.format_exc())
+            return
 
-    # Sidebar
-    st.sidebar.title("System Status")
-    st.sidebar.metric("Total Score", f"{score}", delta=verdict)
-    
-    # [신규] ADL Slope Display
-    slope_val = log.get('adl_slope', 0)
+    # [Sidebar]
+    st.sidebar.title("🛠️ 시스템 상태")
     st.sidebar.markdown("---")
-    st.sidebar.subheader("🌊 Money Flow")
-    if slope_val > 0:
-        st.sidebar.success(f"ADL Slope: +{slope_val:.0f} (Inflow 🚀)")
-    else:
-        st.sidebar.error(f"ADL Slope: {slope_val:.0f} (Outflow 🩸)")
+    
+    term_df = data.get('vix_term_df')
+    if term_df is not None:
+        curr_ratio = term_df['Ratio'].iloc[-1]
+        st.sidebar.metric("Current Ratio", f"{curr_ratio:.4f}")
+    
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("🔍 실시간 위험 지표")
 
+    # Ratio
+    ratio_val = data['vix'] / data['vix3m'] if data['vix3m'] else 1.0
+    if ratio_val > 1.0: st.sidebar.error(f"Ratio: {ratio_val:.4f} ⚠️")
+    elif ratio_val < 0.9: st.sidebar.success(f"Ratio: {ratio_val:.4f} ✅")
+    else: st.sidebar.info(f"Ratio: {ratio_val:.4f}")
+
+    # VVIX Change
+    vvix_hist = data['vvix_hist']['Close']
+    if len(vvix_hist) > 1:
+        vvix_change = ((vvix_hist.iloc[-1] - vvix_hist.iloc[-2]) / vvix_hist.iloc[-2]) * 100
+        if vvix_change > 5.0: st.sidebar.error(f"VVIX Change: +{vvix_change:.1f}% ⚠️")
+        else: st.sidebar.success(f"VVIX Change: {vvix_change:.1f}%")
+
+    # RSI(2)
+    rsi2_val = data['rsi2']
+    if rsi2_val < 10: st.sidebar.success(f"RSI(2): {rsi2_val:.1f} (눌림목) ✅")
+    else: st.sidebar.info(f"RSI(2): {rsi2_val:.1f}")
+
+    # Signals
+    if log.get('capitulation') == 'detected': st.sidebar.success("투매 신호: ✅ 발생")
+    else: st.sidebar.info("투매 신호: ❌ 미발생")
+    
+    if log.get('vvix_trap') == 'detected': st.sidebar.error("VVIX Trap: ⚠️ 감지됨")
+    else: st.sidebar.success("VVIX Trap: ✅ 없음")
+
+    st.sidebar.markdown("---")
+    st.sidebar.subheader(f"📊 총점: {score}점")
+    st.sidebar.markdown(f"**판정:** {verdict_text}")
+    if strat_type:
+        st.sidebar.info(f"전략: {strat_type}")
+
+    # 스타일 헬퍼
+    def hl_score(category, row_state, col_season):
+        base = "style='border: 1px solid #ddd; padding: 4px; color: black; background-color: white;'"
+        current_val = log.get(category, '')
+        is_match = False
+        if category == 'rsi' and row_state == 'escape':
+            if 'escape' in current_val: is_match = True
+        else:
+            if current_val == row_state: is_match = True
+        
+        if is_match and (season == col_season or col_season == 'ALL'):
+            return "style='border: 3px solid #FF5722; background-color: #FFF8E1; font-weight: bold; color: #D84315; padding: 4px;'"
+        return base
+
+    def hl_season(row_season):
+        if season == row_season:
+            return "style='border: 3px solid #2196F3; background-color: #E3F2FD; font-weight: bold; color: black; padding: 4px;'"
+        return "style='border: 1px solid #ddd; padding: 4px; color: black; background-color: white;'"
+
+    td_style = "style='border: 1px solid #ddd; padding: 4px; color: black; background-color: white;'"
+    th_style = "style='border: 1px solid #ddd; padding: 4px; color: black; background-color: #f2f2f2;'"
+    vix_ratio_disp = f"{log.get('vix_ratio', 0):.2f}"
+    z_disp = f"{log.get('z_score', 0):.2f}"
+
+    # 1. Season Matrix
+    html_season_list = [
+        "<h3>1. Market Season Matrix</h3>",
+        "<table style='border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 14px; text-align: center;'>",
+        "<tr>",
+        f"<th {th_style}>Season</th><th {th_style}>Condition</th><th {th_style}>Character</th>",
+        "</tr>",
+        f"<tr><td {hl_season('SUMMER')}>☀️ SUMMER</td><td {hl_season('SUMMER')}>Price > 50MA & 200MA</td><td {hl_season('SUMMER')}>강세장</td></tr>",
+        f"<tr><td {hl_season('AUTUMN')}>🍂 AUTUMN</td><td {hl_season('AUTUMN')}>Price < 50MA but > 200MA</td><td {hl_season('AUTUMN')}>조정기</td></tr>",
+        f"<tr><td {hl_season('WINTER')}>❄️ WINTER</td><td {hl_season('WINTER')}>Price < 50MA & 200MA</td><td {hl_season('WINTER')}>약세장 (-5점)</td></tr>",
+        f"<tr><td {hl_season('SPRING')}>🌱 SPRING</td><td {hl_season('SPRING')}>Price > 50MA but < 200MA</td><td {hl_season('SPRING')}>회복기</td></tr>",
+        "</table>",
+        f"<p>※ QQQ: <b>${data['price']:.2f}</b> (Vol: {data['vol_pct']:.1f}% of 20MA)</p>"
+    ]
+    st.markdown("".join(html_season_list), unsafe_allow_html=True)
+
+    # 2. Scorecard
+    html_score_list = [
+        "<h3>2. Expert Matrix (Mobile Ver.)</h3>",
+        "<table style='border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 12px; text-align: center;'>",
+        "<tr>",
+        f"<th {th_style}>지표</th><th {th_style}>상태</th>",
+        f"<th {th_style}>☀️</th><th {th_style}>🍂</th><th {th_style}>❄️</th><th {th_style}>🌱</th>",
+        "</tr>",
+        
+        # 1. VIX Term
+        f"<tr><td rowspan='3' {td_style}><b>VIX Term</b><br><span style='font-size:10px; color:blue;'>Ratio:{vix_ratio_disp}</span></td>",
+        f"<td {td_style}><b>Easy</b><br>(&lt;0.9)</td>",
+        f"<td colspan='4' {hl_score('term', 'contango', 'ALL')}>+3</td></tr>",
+        
+        f"<tr><td {td_style}>Normal<br>(0.9~1)</td>",
+        f"<td colspan='4' {hl_score('term', 'normal', 'ALL')}>0</td></tr>",
+        
+        f"<tr><td {td_style}><b>붕괴</b><br>(&gt;1.0)</td>",
+        f"<td colspan='4' {hl_score('term', 'backwardation', 'ALL')}><b>-10</b></td></tr>",
+        
+        # 2. Capitulation
+        f"<tr><td {td_style}><b>투매</b></td>",
+        f"<td {td_style}><b>2일연속</b><br>R&gt;1,V&gt;1.5</td>",
+        f"<td colspan='4' {hl_score('capitulation', 'detected', 'ALL')}><b style='color:green;'>+15</b></td></tr>",
+        
+        # 3. VVIX Trap
+        f"<tr><td {td_style}><b>VVIX 함정</b></td>",
+        f"<td {td_style}><b>위험</b><br>VIX↓VVIX↑</td>",
+        f"<td colspan='4' {hl_score('vvix_trap', 'detected', 'ALL')}><b style='color:red;'>-10</b></td></tr>",
+
+        # 4. RSI(14)
+        f"<tr><td rowspan='4' {td_style}>RSI(14)</td>",
+        f"<td {td_style}>과열 (>70)</td>",
+        f"<td {hl_score('rsi', 'over', 'SUMMER')}>-1</td><td {hl_score('rsi', 'over', 'AUTUMN')}>-3</td><td {hl_score('rsi', 'over', 'WINTER')}><b style='color:red;'>-10</b></td><td {hl_score('rsi', 'over', 'SPRING')}>-2</td></tr>",
+        
+        f"<tr><td {td_style}>중립</td>",
+        f"<td {hl_score('rsi', 'neutral', 'SUMMER')}>+1</td><td {hl_score('rsi', 'neutral', 'AUTUMN')}>0</td><td {hl_score('rsi', 'neutral', 'WINTER')}>-1</td><td {hl_score('rsi', 'neutral', 'SPRING')}>+1</td></tr>",
+        
+        f"<tr><td {td_style}>과매도 (<30)</td>",
+        f"<td {hl_score('rsi', 'under', 'SUMMER')}>+5</td><td {hl_score('rsi', 'under', 'AUTUMN')}>+4</td><td {hl_score('rsi', 'under', 'WINTER')}>0</td><td {hl_score('rsi', 'under', 'SPRING')}>+4</td></tr>",
+        
+        f"<tr><td {td_style}>🚀 탈출</td>",
+        f"<td {hl_score('rsi', 'escape', 'SUMMER')}>3~5</td><td {hl_score('rsi', 'escape', 'AUTUMN')}>3~5</td><td {hl_score('rsi', 'escape', 'WINTER')}>3~5</td><td {hl_score('rsi', 'escape', 'SPRING')}>3~5</td></tr>",
+        
+        # 5. RSI(2)
+        f"<tr><td {td_style}><b>RSI(2)</b></td>",
+        f"<td {td_style}><b>눌림목</b><br>(&lt;10)</td>",
+        f"<td colspan='4' {hl_score('rsi2_dip', 'detected', 'ALL')}><b style='color:green;'>+8</b></td></tr>",
+
+        # 6. VIX Level
+        f"<tr><td rowspan='4' {td_style}>VIX</td>",
+        f"<td {td_style}>안정 (<20)</td>",
+        f"<td {hl_score('vix', 'stable', 'SUMMER')}>+2</td><td {hl_score('vix', 'stable', 'AUTUMN')}>0</td><td {hl_score('vix', 'stable', 'WINTER')}>-2</td><td {hl_score('vix', 'stable', 'SPRING')}>+1</td></tr>",
+        
+        f"<tr><td {td_style}>공포 (20-35)</td>",
+        f"<td {hl_score('vix', 'fear', 'SUMMER')}>-3</td><td {hl_score('vix', 'fear', 'AUTUMN')}>-4</td><td {hl_score('vix', 'fear', 'WINTER')}>+2</td><td {hl_score('vix', 'fear', 'SPRING')}>-1</td></tr>",
+        
+        f"<tr><td {td_style}>패닉 상승</td>",
+        f"<td {hl_score('vix', 'panic_rise', 'SUMMER')}>-5</td><td {hl_score('vix', 'panic_rise', 'AUTUMN')}>-6</td><td {hl_score('vix', 'panic_rise', 'WINTER')}>-5</td><td {hl_score('vix', 'panic_rise', 'SPRING')}>-4</td></tr>",
+        
+        f"<tr><td {td_style}>📉 꺾임</td>",
+        f"<td {hl_score('vix', 'peak_out', 'SUMMER')}>-</td><td {hl_score('vix', 'peak_out', 'AUTUMN')}>-</td><td {hl_score('vix', 'peak_out', 'WINTER')}>+7</td><td {hl_score('vix', 'peak_out', 'SPRING')}>-</td></tr>",
+        
+        # 7. Bollinger
+        f"<tr><td rowspan='5' {td_style}>BB Z-Score<br><span style='font-size:10px; color:blue;'>{z_disp}</span></td>",
+        f"<td {td_style} style='color:red;'><b>과열</b><br>(&gt;1.8)</td>",
+        f"<td colspan='4' {hl_score('bb', 'overbought_danger', 'ALL')}><b style='color:red;'>-3</b></td></tr>",
+        
+        f"<tr><td {td_style}><b>상승</b><br>(0.5~1.8)</td>",
+        f"<td colspan='4' {hl_score('bb', 'uptrend', 'ALL')}>+1</td></tr>",
+        
+        f"<tr><td {td_style}>중립</td>",
+        f"<td colspan='4' {hl_score('bb', 'neutral', 'ALL')}>0</td></tr>",
+        
+        f"<tr><td {td_style}><b>저평가</b><br>(-1.8~-0.5)</td>",
+        f"<td colspan='4' {hl_score('bb', 'dip_buying', 'ALL')}>+2</td></tr>",
+        
+        f"<tr><td {td_style}><b>바닥</b><br>(Z&le;-1.8)</td>",
+        f"<td colspan='4' {hl_score('bb', 'oversold_guard', 'ALL')}><b>+1</b></td></tr>",
+        
+        # 8. Trend & Vol
+        f"<tr><td {td_style}>추세</td><td {td_style}>20일선 위</td>",
+        f"<td {hl_score('trend', 'up', 'SUMMER')}>+2</td><td {hl_score('trend', 'up', 'AUTUMN')}>+2</td><td {hl_score('trend', 'up', 'WINTER')}>+3</td><td {hl_score('trend', 'up', 'SPRING')}>+3</td></tr>",
+        
+        f"<tr><td {td_style}>거래량</td><td {td_style}>폭증</td>",
+        f"<td {hl_score('vol', 'explode', 'SUMMER')}>+2</td><td {hl_score('vol', 'explode', 'AUTUMN')}>+3</td><td {hl_score('vol', 'explode', 'WINTER')}>+3</td><td {hl_score('vol', 'explode', 'SPRING')}>+2</td></tr>",
+        
+        # 9. MACD (4-Zone)
+        f"<tr><td rowspan='4' {td_style}>MACD</td>",
+        
+        # Case 1
+        f"<td {td_style}>📈 <b>가속</b><br><span style='font-size:10px;'>(위+골든)</span></td>",
+        f"<td colspan='4' {hl_score('macd', 'zero_up_golden', 'ALL')}><b style='color:green;'>+3</b></td></tr>",
+        
+        # Case 2
+        f"<td {td_style}>📉 <b>조정</b><br><span style='font-size:10px;'>(위+데드)</span></td>",
+        f"<td colspan='4' {hl_score('macd', 'zero_up_dead', 'ALL')}><b style='color:orange;'>-3</b></td></tr>",
+        
+        # Case 3
+        f"<td {td_style}>🎣 <b>함정</b><br><span style='font-size:10px;'>(아래+골든)</span></td>",
+        f"<td colspan='4' {hl_score('macd', 'zero_down_golden', 'ALL')}><b style='color:gray;'>0</b></td></tr>",
+        
+        # Case 4
+        f"<td {td_style}>☔ <b>폭락</b><br><span style='font-size:10px;'>(아래+데드)</span></td>",
+        f"<td colspan='4' {hl_score('macd', 'zero_down_dead', 'ALL')}><b style='color:red;'>-5</b></td></tr>",
+        
+        "</table>"
+    ]
+    st.markdown("".join(html_score_list), unsafe_allow_html=True)
+
+    # 3. Final Verdict (수정됨: 색상 변경 및 전략 로직 추가)
+    def get_matrix_style(current_id, row_id, bg_color):
+        if current_id == row_id:
+            return f"style='background-color: {bg_color}; border: 3px solid #666; font-weight: bold; color: #333; height: 50px;'"
+        else:
+            return "style='background-color: white; border: 1px solid #eee; color: #999;'"
+            
+    strat_display = f"""
+    <div style='background-color:#f1f8e9; padding:15px; border-left:5px solid #4caf50; margin-bottom:15px;'>
+        <div style='font-size:18px; font-weight:bold; color:#2e7d32;'>🔔 추천 전략: {strat_type if strat_type else '-'}</div>
+        <div style='font-size:14px; color:#555; margin-top:5px;'>💡 <b>선택 근거:</b> {strat_basis if strat_basis else '-'}</div>
+    </div>
+    """
+
+    html_verdict_list = [
+        # 점수 색상 Blue -> Black 변경
+        f"<h3>3. Final Verdict: <span style='color:white;'>{score}점</span> - Dynamic Exit Matrix</h3>",
+        strat_display, # 전략 추천 박스 추가
+        "<div style='border: 2px solid #ccc; border-radius: 10px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1);'>",
+        "<table style='border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; text-align: center;'>",
+        f"<tr style='background-color: #333; color: white;'>",
+        f"<th {th_style} style='color:white;'>점수 구간</th>",
+        f"<th {th_style} style='color:white;'>최종 판정</th>",
+        f"<th {th_style} style='color:white;'>🎯 익절 목표</th>",
+        f"<th {th_style} style='color:white;'>🛑 손절 라인</th>",
+        "</tr>",
+        
+        f"<tr {get_matrix_style(matrix_id, 'panic', '#ffebee')}>",
+        "<td>VIX 급등 / 구조 붕괴 / VVIX Trap</td><td>⛔ 매매 중단 (System Collapse)</td><td>-</td><td>-</td></tr>",
+        
+        f"<tr {get_matrix_style(matrix_id, 'super_strong', '#c8e6c9')}>",
+        "<td>20점 이상 (투매 신호 포함)</td><td>💎💎 극강 추세 (Super Strong)</td><td style='color:green;'>+100%</td><td style='color:red;'>-300% (원금 4배)</td></tr>",
+        
+        f"<tr {get_matrix_style(matrix_id, 'strong', '#dff0d8')}>",
+        "<td>12 ~ 19점</td><td>💎 추세 추종 (Strong)</td><td style='color:green;'>+75%</td><td style='color:red;'>-300% (원금 4배)</td></tr>",
+        
+        f"<tr {get_matrix_style(matrix_id, 'standard', '#ffffff')}>",
+        "<td>8 ~ 11점</td><td>✅ 표준 대응 (Standard)</td><td style='color:green;'>+50%</td><td style='color:red;'>-200% (원금 3배)</td></tr>",
+        
+        f"<tr {get_matrix_style(matrix_id, 'weak', '#fff9c4')}>",
+        "<td>5 ~ 7점</td><td>⚠️ 속전 속결 (Hit & Run)</td><td style='color:green;'>+30%</td><td style='color:red;'>-150% (원금 2.5배)</td></tr>",
+        
+        f"<tr {get_matrix_style(matrix_id, 'no_entry', '#f2dede')}>",
+        "<td>5점 미만</td><td>🛡️ 진입 보류 (No Entry)</td><td>-</td><td>-</td></tr>",
+        
+        "</table>",
+        "</div>"
+    ]
+    st.markdown("".join(html_verdict_list), unsafe_allow_html=True)
+
+    st.markdown("---")
+    st.subheader("📈 기술적 분석 차트")
     st.pyplot(create_charts(data))
 
 if __name__ == "__main__":
