@@ -51,7 +51,7 @@ def fetch_ticker_data(ticker, period="2y"):
         t = yf.Ticker(ticker)
         hist = t.history(period=period)
         return ticker, t, hist
-    exceptException as e:
+    except Exception as e: # [수정됨] 오타 수정 (띄어쓰기)
         return ticker, None, pd.DataFrame()
 
 @st.cache_data(ttl=1800)
