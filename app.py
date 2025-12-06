@@ -83,52 +83,25 @@ def get_market_data():
     hist['Vol_MA20'] = hist['Volume'].rolling(window=20).mean()
 
     # [수정됨] ADL (Advance-Decline Line) 데이터 추가
-    # 전략: ^ADD(나스닥 등락) 데이터를 우선 시도하고, 실패 시 QQQ 가격 변화로 대체(Fallback)
     try:
-        # 방법 1: ^ADD 티커 시도
         add_ticker = yf.Ticker("^ADD")
         add_hist = add_ticker.history(period="2y")
         
-        # 디버깅용 출력 (터미널)
-        # print(f"^ADD Data Length: {len(add_hist)}")
-        
         if not add_hist.empty and len(add_hist) > 10:
-            # 인덱스 시간대 제거 및 정규화 (병합 오류 방지)
             hist.index = hist.index.tz_localize(None).normalize()
             add_hist.index = add_hist.index.tz_localize(None).normalize()
-            
-            # QQQ 데이터프레임에 병합 (Left Join)
             hist = hist.join(add_hist['Close'].rename('Net_Issues'), how='left')
-            
-            # 결측치 처리 (중요: 전방채움 후 0으로 채움)
-            # 주말/공휴일 등으로 데이터가 비는 경우 직전 데이터 사용
             hist['Net_Issues'] = hist['Net_Issues'].ffill().fillna(0)
-            
-            # ADL 계산 (누적합)
             hist['ADL'] = hist['Net_Issues'].cumsum()
-            
-            # ADL 이동평균선
             hist['ADL_MA20'] = hist['ADL'].rolling(window=20).mean()
-            
         else:
-            raise ValueError("^ADD 데이터 부족 또는 없음")
+            raise ValueError("^ADD 데이터 부족")
             
     except Exception as e:
         print(f"⚠️ ADL 데이터 수집 실패 (^ADD): {e}")
-        print("📊 대체 방법 사용: QQQ Price 변화 기반 ADL 근사치 생성")
-        
-        # 방법 2: 대체 로직 (Fallback)
-        # 실제 등락 주선 데이터가 없을 때, QQQ가 오르면 +1, 내리면 -1로 가정하여 추세선 생성
         hist['Net_Issues'] = np.where(hist['Close'] > hist['Close'].shift(1), 1, -1)
-        hist['Net_Issues'].iloc[0] = 0  # 첫 날은 0
-        
-        # ADL 계산
-        hist['ADL'] = hist['Net_Issues'].cumsum()
-        
-        # 시각적 편의를 위해 스케일 조정
-        hist['ADL'] = hist['ADL'] * 100
-        
-        # 이동평균선
+        hist['Net_Issues'].iloc[0] = 0
+        hist['ADL'] = hist['Net_Issues'].cumsum() * 100
         hist['ADL_MA20'] = hist['ADL'].rolling(window=20).mean()
     
     # 2. VIX, VIX3M, VVIX 데이터 처리
@@ -181,6 +154,16 @@ def get_market_data():
     except Exception as e:
         print(f"Error processing VVIX: {e}")
 
+    # [신규 추가] SKEW 데이터 수집
+    skew_hist = pd.DataFrame()
+    try:
+        skew_ticker = yf.Ticker("^SKEW")
+        skew_hist = skew_ticker.history(period="2y")
+        if not skew_hist.empty:
+            skew_hist.index = skew_hist.index.tz_localize(None).normalize()
+    except Exception as e:
+        print(f"Error fetching SKEW: {e}")
+
     curr = hist.iloc[-1]
     prev = hist.iloc[-2]
     curr_vix = vix_hist['Close'].iloc[-1]
@@ -208,7 +191,8 @@ def get_market_data():
         'vix3m': vix3m_val,
         'iv': current_iv,
         'hist': hist, 'vix_hist': vix_hist, 'vix3m_hist': vix3m_hist, 'vvix_hist': vvix_hist,
-        'vix_term_df': vix_term_df
+        'vix_term_df': vix_term_df,
+        'skew_hist': skew_hist  # 추가됨
     }
 
 # === [2] 신규 로직 함수 ===
@@ -602,7 +586,7 @@ def find_best_option(price, iv, target_delta, strategy_type):
         print(f"Option Search Error: {e}")
         return None
 
-# === [6] 차트 (10개 서브플롯) - 수정됨: Trend 차트 위치 및 ADL 추가 ===
+# === [6] 차트 (11개 서브플롯) - 수정됨: Trend 차트 위치, ADL, SKEW 추가 ===
 def create_charts(data):
     hist = data['hist'].copy()  # 원본 데이터 보호를 위해 복사
     
@@ -627,10 +611,10 @@ def create_charts(data):
     }
     
     # === 차트 그리기 시작 ===
-    # 높이를 늘리고 10행으로 변경 (ADL 추가됨)
-    fig = plt.figure(figsize=(10, 30))
-    # 높이 비율 조정: [9] ADL(1) 추가
-    gs = fig.add_gridspec(10, 1, height_ratios=[2, 0.6, 1.5, 1, 1, 1, 1, 1, 1, 1])
+    # 높이를 늘리고 11행으로 변경 (ADL, SKEW 추가됨)
+    fig = plt.figure(figsize=(10, 33))
+    # 높이 비율 조정: [10] SKEW(1) 추가
+    gs = fig.add_gridspec(11, 1, height_ratios=[2, 0.6, 1.5, 1, 1, 1, 1, 1, 1, 1, 1])
     
     # 1. Price Chart (Main) - Index 0
     ax1 = fig.add_subplot(gs[0])
@@ -687,7 +671,7 @@ def create_charts(data):
     ax_vix_abs = fig.add_subplot(gs[3], sharex=ax1)
     ax_vix_abs.plot(data['vix_hist'].index, data['vix_hist']['Close'], color='purple', label='VIX (Spot)', zorder=2)
     if data['vix3m_hist'] is not None and not data['vix3m_hist'].empty:
-         ax_vix_abs.plot(data['vix3m_hist'].index, data['vix3m_hist']['Close'], color='gray', ls=':', label='VIX3M', zorder=2)
+          ax_vix_abs.plot(data['vix3m_hist'].index, data['vix3m_hist']['Close'], color='gray', ls=':', label='VIX3M', zorder=2)
     
     ax_vix_abs.axhline(35, color='red', ls='--', zorder=2)
     ax_vix_abs.axhline(20, color='green', ls='--', zorder=2)
@@ -790,7 +774,7 @@ def create_charts(data):
     ax_rsi2.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_rsi2.get_xticklabels(), visible=False)
 
-    # [수정됨] 10. ADL (Advance-Decline Line) - Index 9 (Last)
+    # 10. ADL (Advance-Decline Line) - Index 9
     ax_adl = fig.add_subplot(gs[9], sharex=ax1)
     
     # 데이터 안전 장치: 컬럼이 존재하고 데이터가 유효한 경우에만 플롯
@@ -802,7 +786,7 @@ def create_charts(data):
         if not hist['ADL'].empty:
             last_adl = hist['ADL'].iloc[-1]
             ax_adl.text(hist.index[-1], last_adl, f"{last_adl:.0f}", 
-                       color='black', fontsize=9, fontweight='bold', ha='left', va='center')
+                        color='black', fontsize=9, fontweight='bold', ha='left', va='center')
         
         # 기준선 (0)
         ax_adl.axhline(0, color='gray', ls=':', alpha=0.5, zorder=1)
@@ -818,15 +802,50 @@ def create_charts(data):
         ax_adl.set_title('Advance-Decline Line (No Data)', fontsize=12, fontweight='bold')
 
     ax_adl.grid(True, alpha=0.3, zorder=1)
-    ax_adl.set_xlabel('Date', fontsize=10)
+    plt.setp(ax_adl.get_xticklabels(), visible=False)
+
+    # [신규 추가] 11. SKEW Index vs QQQ - Index 10 (Last)
+    ax_skew = fig.add_subplot(gs[10], sharex=ax1)
+    
+    if 'skew_hist' in data and not data['skew_hist'].empty:
+        # SKEW (왼쪽 축)
+        color_skew = 'tab:orange'
+        ax_skew.plot(data['skew_hist'].index, data['skew_hist']['Close'], color=color_skew, label='CBOE SKEW', lw=1.5, zorder=2)
+        
+        # 기준선: 145 (위험 신호)
+        ax_skew.axhline(145, color='red', ls='--', alpha=0.8, label='Risk Threshold (145)', zorder=1)
+        ax_skew.axhline(115, color='green', ls=':', alpha=0.5, label='Complacency (115)', zorder=1)
+        
+        ax_skew.set_ylabel('SKEW Index', color=color_skew, fontweight='bold')
+        ax_skew.tick_params(axis='y', labelcolor=color_skew)
+        
+        # QQQ Price (오른쪽 축 - 오버레이)
+        ax_skew_right = ax_skew.twinx()
+        color_qqq = 'gray'
+        ax_skew_right.plot(hist.index, hist['Close'], color=color_qqq, alpha=0.3, label='QQQ Price', zorder=1)
+        ax_skew_right.set_ylabel('QQQ Price', color=color_qqq, fontweight='bold')
+        ax_skew_right.set_yticks([]) # 오른쪽 축 눈금 숨김 (깔끔하게 보이기 위함)
+
+        # 범례 합치기
+        lines_1, labels_1 = ax_skew.get_legend_handles_labels()
+        lines_2, labels_2 = ax_skew_right.get_legend_handles_labels()
+        ax_skew.legend(lines_1 + lines_2, labels_1 + labels_2, loc='upper left', fontsize=8)
+        
+    else:
+        ax_skew.text(0.5, 0.5, "⚠️ SKEW Data Not Available", 
+                    transform=ax_skew.transAxes, ha='center', color='red')
+
+    ax_skew.set_title('Tail Risk: SKEW Index (Orange) vs QQQ Price (Gray)', fontsize=12, fontweight='bold')
+    ax_skew.grid(True, alpha=0.3, zorder=1)
+    ax_skew.set_xlabel('Date', fontsize=10)
     
     # === [모든 서브플롯에 배경색 일괄 적용] ===
     # 배경색 칠하기를 위한 그룹화 (연속된 구간 찾기)
     hist['group'] = (hist['Season'] != hist['Season'].shift()).cumsum()
     
     # 모든 axes를 리스트로 묶음 (Trend 차트는 제외 - 별도 MACD 배경 적용됨)
-    # 순서: Price, Volume, Trend(X), VIX_Abs, Ratio, RSI, MACD, Ratio_VVIX, RSI2, ADL
-    all_axes_except_trend = [ax1, ax_vol, ax_vix_abs, ax_ratio, ax_rsi, ax2, ax_ratio_vvix, ax_rsi2, ax_adl]
+    # 순서: Price, Volume, Trend(X), VIX_Abs, Ratio, RSI, MACD, Ratio_VVIX, RSI2, ADL, SKEW(New)
+    all_axes_except_trend = [ax1, ax_vol, ax_vix_abs, ax_ratio, ax_rsi, ax2, ax_ratio_vvix, ax_rsi2, ax_adl, ax_skew]
     
     # 반복문으로 차트에 계절 배경색 적용 (Trend 차트 제외)
     for ax in all_axes_except_trend:
@@ -1102,9 +1121,6 @@ def main():
         "</div>"
     ]
     st.markdown("".join(html_verdict_list), unsafe_allow_html=True)
-
-    # 4. Manual / Warning (매뉴얼 삭제됨) - 이 부분이 제거되었습니다
-    # "진입 금지 (No Entry)" 메시지 표시 코드가 삭제됨
 
     st.markdown("---")
     st.subheader("📈 기술적 분석 차트")
