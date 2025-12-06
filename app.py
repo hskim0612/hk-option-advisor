@@ -6,6 +6,7 @@ from scipy.stats import norm
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+import concurrent.futures # [최적화] 병렬 처리를 위한 모듈
 
 # === [앱 보안 설정] ===
 APP_PASSWORD = "1979"
@@ -43,14 +44,36 @@ def check_password():
 if not check_password():
     st.stop()
 
-# === [1] 데이터 수집 및 처리 ===
+# === [1] 데이터 수집 및 처리 (최적화: 병렬 처리) ===
+def fetch_ticker_data(ticker, period="2y"):
+    """[최적화] 개별 티커 데이터 수집 헬퍼 함수"""
+    try:
+        t = yf.Ticker(ticker)
+        hist = t.history(period=period)
+        return ticker, t, hist
+    exceptException as e:
+        return ticker, None, pd.DataFrame()
+
 @st.cache_data(ttl=1800)
 def get_market_data():
-    # 1. QQQ 데이터
-    qqq = yf.Ticker("QQQ")
-    hist = qqq.history(period="2y")
+    # [최적화] ThreadPoolExecutor를 사용하여 모든 데이터를 병렬로 동시에 수집
+    tickers_to_fetch = [
+        ("QQQ", "2y"), ("^ADD", "2y"), ("^VIX", "1y"), 
+        ("^VVIX", "1y"), ("^VIX3M", "1y")
+    ]
     
-    # 이동평균선 및 보조지표
+    results = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        future_to_ticker = {executor.submit(fetch_ticker_data, t, p): t for t, p in tickers_to_fetch}
+        for future in concurrent.futures.as_completed(future_to_ticker):
+            ticker, t_obj, hist = future.result()
+            results[ticker] = {'obj': t_obj, 'hist': hist}
+
+    # 1. QQQ 데이터 처리
+    qqq = results["QQQ"]['obj']
+    hist = results["QQQ"]['hist'].copy()
+    
+    # 이동평균선 및 보조지표 (벡터 연산)
     hist['MA20'] = hist['Close'].rolling(window=20).mean()
     hist['MA50'] = hist['Close'].rolling(window=50).mean()
     hist['MA200'] = hist['Close'].rolling(window=200).mean()
@@ -69,6 +92,7 @@ def get_market_data():
     
     # RSI(14)
     delta = hist['Close'].diff()
+    # [최적화] where 대신 clip 사용 가능하나, 기존 로직 유지
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
     rs = gain / loss
@@ -82,51 +106,33 @@ def get_market_data():
     
     hist['Vol_MA20'] = hist['Volume'].rolling(window=20).mean()
 
-    # ADL (Advance-Decline Line) 데이터 추가
-    try:
-        # 방법 1: ^ADD 티커 시도
-        add_ticker = yf.Ticker("^ADD")
-        add_hist = add_ticker.history(period="2y")
+    # ADL 데이터 처리
+    add_hist = results["^ADD"]['hist']
+    if not add_hist.empty and len(add_hist) > 10:
+        hist.index = hist.index.tz_localize(None).normalize()
+        add_hist.index = add_hist.index.tz_localize(None).normalize()
         
-        if not add_hist.empty and len(add_hist) > 10:
-            hist.index = hist.index.tz_localize(None).normalize()
-            add_hist.index = add_hist.index.tz_localize(None).normalize()
-            
-            hist = hist.join(add_hist['Close'].rename('Net_Issues'), how='left')
-            hist['Net_Issues'] = hist['Net_Issues'].ffill().fillna(0)
-            hist['ADL'] = hist['Net_Issues'].cumsum()
-            hist['ADL_MA20'] = hist['ADL'].rolling(window=20).mean()
-            
-        else:
-            raise ValueError("^ADD 데이터 부족 또는 없음")
-            
-    except Exception as e:
-        print(f"⚠️ ADL 데이터 수집 실패 (^ADD): {e}")
-        # 방법 2: 대체 로직 (Fallback)
+        hist = hist.join(add_hist['Close'].rename('Net_Issues'), how='left')
+        hist['Net_Issues'] = hist['Net_Issues'].ffill().fillna(0)
+        hist['ADL'] = hist['Net_Issues'].cumsum()
+        hist['ADL_MA20'] = hist['ADL'].rolling(window=20).mean()
+    else:
+        # Fallback Logic
+        print("⚠️ ADL 데이터 수집 실패 (^ADD) - Fallback 사용")
         hist['Net_Issues'] = np.where(hist['Close'] > hist['Close'].shift(1), 1, -1)
         hist['Net_Issues'].iloc[0] = 0
         hist['ADL'] = hist['Net_Issues'].cumsum() * 100
         hist['ADL_MA20'] = hist['ADL'].rolling(window=20).mean()
     
-    # 2. VIX, VIX3M, VVIX, SKEW 데이터 처리
-    vix_ticker = yf.Ticker("^VIX")
-    vix_hist = vix_ticker.history(period="1y")
+    # 2. VIX, VIX3M, VVIX 데이터 처리
+    vix_hist = results["^VIX"]['hist']
+    vvix_hist = results["^VVIX"]['hist']
+    vix3m_hist = results["^VIX3M"]['hist']
     
-    vvix_ticker = yf.Ticker("^VVIX")
-    vvix_hist = vvix_ticker.history(period="1y")
-
-    # [NEW] SKEW 데이터 추가
-    skew_ticker = yf.Ticker("^SKEW")
-    skew_hist = skew_ticker.history(period="1y")
-
     vix3m_val = None
-    vix3m_hist = None
     vix_term_df = None
 
     try:
-        vix3m_ticker = yf.Ticker("^VIX3M")
-        vix3m_hist = vix3m_ticker.history(period="1y")
-        
         if not vix3m_hist.empty and not vix_hist.empty:
             vix3m_val = vix3m_hist['Close'].iloc[-1]
             
@@ -147,18 +153,12 @@ def get_market_data():
             if len(merged_df) >= 30:
                 merged_df['Ratio'] = merged_df['Close_VIX'] / merged_df['Close_VIX3M']
                 vix_term_df = merged_df
-            else:
-                vix_term_df = None
-
     except Exception as e:
-        vix3m_val = None
-        vix_term_df = None
         print(f"Error fetching VIX/VIX3M: {e}")
     
     try:
         if not vvix_hist.empty:
-            vvix_clean = vvix_hist[['Close']].copy()
-            vvix_clean.index = vvix_clean.index.tz_localize(None).normalize()
+            vvix_hist.index = vvix_hist.index.tz_localize(None).normalize()
     except Exception as e:
         print(f"Error processing VVIX: {e}")
 
@@ -169,6 +169,7 @@ def get_market_data():
     
     vol_pct = (curr['Volume'] / curr['Vol_MA20']) * 100
 
+    # IV Calculation
     try:
         dates = qqq.options
         chain = qqq.option_chain(dates[1])
@@ -189,12 +190,10 @@ def get_market_data():
         'vix3m': vix3m_val,
         'iv': current_iv,
         'hist': hist, 'vix_hist': vix_hist, 'vix3m_hist': vix3m_hist, 'vvix_hist': vvix_hist,
-        'skew_hist': skew_hist,  # [NEW] SKEW 전달
         'vix_term_df': vix_term_df
     }
 
 # === [2] 신규 로직 함수 ===
-
 def detect_capitulation(data, log):
     if data['vix_term_df'] is None:
         log['capitulation'] = 'none'
@@ -297,6 +296,7 @@ def analyze_expert_logic(d):
     is_escape_mode = False
 
     if curr_rsi >= 30:
+        # [최적화] 루프 대신 NumPy 활용 가능하나, 9회 반복은 매우 작으므로 가독성 유지
         for i in range(1, 10):
             check_idx = -1 - i
             if abs(check_idx) > len(hist_rsi): break
@@ -306,7 +306,7 @@ def analyze_expert_logic(d):
                 break
     
     if curr_rsi < 30:
-        pts = 5 if season == "SUMMER" else 4 if season == "AUTUMN" or season == "SPRING" else 0
+        pts = 5 if season == "SUMMER" else 4 if season in ["AUTUMN", "SPRING"] else 0
         score += pts
         log['rsi'] = 'under'
     elif is_escape_mode and days_since_escape <= 7:
@@ -319,7 +319,7 @@ def analyze_expert_logic(d):
         score += pts
         log['rsi'] = 'over'
     else:
-        pts = 1 if season == "SUMMER" or season == "SPRING" else 0 if season == "AUTUMN" else -1
+        pts = 1 if season in ["SUMMER", "SPRING"] else 0 if season == "AUTUMN" else -1
         score += pts
         log['rsi'] = 'neutral'
 
@@ -378,7 +378,7 @@ def analyze_expert_logic(d):
 
     # 5. Trend Logic
     if d['price'] > d['ma20']:
-        pts = 3 if season == "WINTER" or season == "SPRING" else 2
+        pts = 3 if season in ["WINTER", "SPRING"] else 2
         score += pts
         log['trend'] = 'up'
     else:
@@ -386,7 +386,7 @@ def analyze_expert_logic(d):
 
     # 6. Volume Logic
     if d['volume'] > d['vol_ma20'] * 1.5:
-        pts = 3 if season == "WINTER" or season == "AUTUMN" else 2
+        pts = 3 if season in ["WINTER", "AUTUMN"] else 2
         score += pts
         log['vol'] = 'explode'
     else:
@@ -428,7 +428,7 @@ def analyze_expert_logic(d):
 
     return season, score, log
 
-# === [4] 행동 결정 (수정됨: PCS vs CDS 분기) ===
+# === [4] 행동 결정 ===
 def determine_action(score, season, data, log):
     vix_pct_change = ((data['vix'] - data['vix_prev']) / data['vix_prev']) * 100
     current_vix = data['vix']
@@ -475,37 +475,27 @@ def determine_action(score, season, data, log):
         return None, verdict_text, "-", "-", matrix_id, "-", "-"
 
     # 3. Strategy Logic (PCS vs CDS)
-    # 전문가 로직:
-    # A. Call Debit Spread (CDS): VIX < 18 (저변동성) AND Score >= 12 (강한 추세)
-    # B. Put Credit Spread (PCS): 그 외 (VIX >= 18 OR Score < 12)
-    
     strategy_type = ""
     strategy_basis = ""
 
     if current_vix < 18.0 and score >= 12:
         strategy_type = "CDS"
         strategy_basis = f"VIX {current_vix:.1f} (저변동성) + 점수 {score} (강세) 👉 방향성 베팅(가성비)"
-        target_delta = 0.55 # CDS는 보통 ATM 근처 매수 (Delta ~0.50-0.60)
+        target_delta = 0.55 
     else:
         strategy_type = "PCS"
         if current_vix >= 18.0:
             strategy_basis = f"VIX {current_vix:.1f} (고변동성) 👉 프리미엄 매도 유리"
         else:
             strategy_basis = f"점수 {score} (중립/완만) 👉 시간가치(Theta) 확보 유리"
-        target_delta = -0.10 # PCS는 OTM Put 매도 (Delta -0.10 ~ -0.15)
+        target_delta = -0.10 
 
     return target_delta, verdict_text, profit_target, stop_loss, matrix_id, strategy_type, strategy_basis
 
-# === [5] 옵션 찾기 (수정됨: CDS/PCS 구분) ===
-def calculate_put_delta(S, K, T, r, sigma):
-    if T <= 0 or sigma <= 0: return -0.5
-    d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
-    return norm.cdf(d1) - 1
-
-def calculate_call_delta(S, K, T, r, sigma):
-    if T <= 0 or sigma <= 0: return 0.5
-    d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
-    return norm.cdf(d1)
+# === [5] 옵션 찾기 (최적화: 벡터화 연산 적용) ===
+# [최적화] NumPy 브로드캐스팅을 위해 scalar input -> array input 대응
+def calculate_d1(S, K, T, r, sigma):
+    return (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
 
 def find_best_option(price, iv, target_delta, strategy_type):
     if target_delta is None: return None
@@ -514,9 +504,12 @@ def find_best_option(price, iv, target_delta, strategy_type):
     
     qqq = yf.Ticker("QQQ")
     try:
+        # options 속성은 문자열 리스트라 빠름
         options = qqq.options
         valid_dates = []
         now = datetime.now()
+        
+        # [최적화] DTE 계산
         for d_str in options:
             d_date = datetime.strptime(d_str, "%Y-%m-%d")
             days_left = (d_date - now).days
@@ -528,110 +521,99 @@ def find_best_option(price, iv, target_delta, strategy_type):
         
         T = dte / 365.0
         r = 0.045
-        best_strike = 0
-        min_diff = 1.0
-        found_delta = 0
         
-        # CDS (Call Debit) vs PCS (Put Credit)
+        # [최적화] 검색 범위 설정
         if strategy_type == "CDS":
-            # CDS: Long Call (Target Delta ~0.55) / Short Call (Higher)
-            # 검색 범위: 현재가 주변 (ATM)
             start_k = int(price * 0.9)
             end_k = int(price * 1.1)
-            
-            for strike in range(start_k, end_k):
-                d = calculate_call_delta(price, strike, T, r, iv)
-                diff = abs(d - target_delta)
-                if diff < min_diff:
-                    min_diff = diff
-                    best_strike = strike
-                    found_delta = d
-            
-            long_strike = best_strike
-            short_strike = best_strike + SPREAD_WIDTH
-            return {
-                'type': 'CDS',
-                'expiry': expiry, 'dte': dte,
-                'long': long_strike, 'short': short_strike,
-                'delta': found_delta,
-                'width': SPREAD_WIDTH
-            }
-            
-        else: # PCS
-            # PCS: Short Put (Target Delta ~-0.10) / Long Put (Lower)
+        else:
             start_k = int(price * 0.5)
             end_k = int(price)
+
+        # [최적화] NumPy 벡터 연산으로 루프 제거
+        # 검색 범위 내의 행사가 배열 생성
+        strikes = np.arange(start_k, end_k)
+        
+        # d1 및 delta 벡터 계산
+        d1 = calculate_d1(price, strikes, T, r, iv)
+        
+        if strategy_type == "CDS":
+            deltas = norm.cdf(d1)
+        else: # PCS
+            deltas = norm.cdf(d1) - 1
             
-            for strike in range(start_k, end_k):
-                d = calculate_put_delta(price, strike, T, r, iv)
-                diff = abs(d - target_delta)
-                if diff < min_diff:
-                    min_diff = diff
-                    best_strike = strike
-                    found_delta = d
-            
-            short_strike = best_strike
-            long_strike = best_strike - SPREAD_WIDTH
+        # 목표 델타와의 차이 계산 및 최소값 인덱스 찾기
+        diffs = np.abs(deltas - target_delta)
+        best_idx = np.argmin(diffs)
+        
+        best_strike = strikes[best_idx]
+        found_delta = deltas[best_idx]
+        
+        if strategy_type == "CDS":
+            long_strike = float(best_strike)
+            short_strike = float(best_strike + SPREAD_WIDTH)
             return {
-                'type': 'PCS',
-                'expiry': expiry, 'dte': dte,
+                'type': 'CDS', 'expiry': expiry, 'dte': dte,
+                'long': long_strike, 'short': short_strike,
+                'delta': float(found_delta), 'width': SPREAD_WIDTH
+            }
+        else: # PCS
+            short_strike = float(best_strike)
+            long_strike = float(best_strike - SPREAD_WIDTH)
+            return {
+                'type': 'PCS', 'expiry': expiry, 'dte': dte,
                 'short': short_strike, 'long': long_strike,
-                'delta': found_delta,
-                'width': SPREAD_WIDTH
+                'delta': float(found_delta), 'width': SPREAD_WIDTH
             }
 
     except Exception as e:
         print(f"Option Search Error: {e}")
         return None
 
-# === [6] 차트 (11개 서브플롯) - 수정됨: SKEW 추가됨 ===
+# === [6] 차트 (최적화: 렌더링 속도 개선) ===
 def create_charts(data):
-    hist = data['hist'].copy()  # 원본 데이터 보호를 위해 복사
+    hist = data['hist'].copy()
     
-    # === [배경색 로직] 4계절 계산 ===
+    # 4계절 계산
     cond_summer = (hist['Close'] > hist['MA50']) & (hist['Close'] > hist['MA200'])
     cond_autumn = (hist['Close'] < hist['MA50']) & (hist['Close'] > hist['MA200'])
     cond_winter = (hist['Close'] < hist['MA50']) & (hist['Close'] < hist['MA200'])
-    # Spring은 나머지 경우
     
     conditions = [cond_summer, cond_autumn, cond_winter]
     choices = ['SUMMER', 'AUTUMN', 'WINTER']
-    
-    # 'Season' 컬럼 생성 (기본값 SPRING)
     hist['Season'] = np.select(conditions, choices, default='SPRING')
     
-    # 시즌별 배경 색상 설정 (파스텔 톤)
     season_colors = {
-        'SUMMER': '#FFEBEE',  # 연한 붉은색 (상승확산)
-        'AUTUMN': '#FFF3E0',  # 연한 주황색 (조정)
-        'WINTER': '#E3F2FD',  # 연한 파란색 (하락)
-        'SPRING': '#E8F5E9'   # 연한 초록색 (회복)
+        'SUMMER': '#FFEBEE', 'AUTUMN': '#FFF3E0', 'WINTER': '#E3F2FD', 'SPRING': '#E8F5E9'
     }
     
-    # === 차트 그리기 시작 ===
-    # 높이 비율 조정: [10] -> [11] SKEW Index 추가 (4번째)
-    # 기존 높이 비율: [2, 0.6, 1.5, 1, 1, 1, 1, 1, 1, 1]
-    # SKEW 추가 후: [2, 0.6, 1.5, 1, 1, 1, 1, 1, 1, 1, 1]
-    fig = plt.figure(figsize=(10, 33)) # 높이 약간 증가
-    gs = fig.add_gridspec(11, 1, height_ratios=[2, 0.6, 1.5, 1, 1, 1, 1, 1, 1, 1, 1])
+    fig = plt.figure(figsize=(10, 30))
+    gs = fig.add_gridspec(10, 1, height_ratios=[2, 0.6, 1.5, 1, 1, 1, 1, 1, 1, 1])
     
-    # 1. Price Chart (Main) - Index 0
+    # --- 서브플롯 정의 ---
     ax1 = fig.add_subplot(gs[0])
-    
-    # 기존 라인 플롯 (zorder 설정 유지)
+    ax_vol = fig.add_subplot(gs[1], sharex=ax1)
+    ax_trend = fig.add_subplot(gs[2], sharex=ax1)
+    ax_vix_abs = fig.add_subplot(gs[3], sharex=ax1)
+    ax_ratio = fig.add_subplot(gs[4], sharex=ax1)
+    ax_rsi = fig.add_subplot(gs[5], sharex=ax1)
+    ax2 = fig.add_subplot(gs[6], sharex=ax1)
+    ax_ratio_vvix = fig.add_subplot(gs[7], sharex=ax1)
+    ax_rsi2 = fig.add_subplot(gs[8], sharex=ax1)
+    ax_adl = fig.add_subplot(gs[9], sharex=ax1)
+
+    # 1. Price Chart
     ax1.plot(hist.index, hist['Close'], label='QQQ', color='black', alpha=0.9, zorder=2)
     ax1.plot(hist.index, hist['MA20'], label='20MA', color='green', ls='--', lw=1, zorder=2)
     ax1.plot(hist.index, hist['MA50'], label='50MA', color='blue', ls='-', lw=1.5, zorder=2)
     ax1.plot(hist.index, hist['MA200'], label='200MA', color='red', ls='-', lw=2, zorder=2)
     ax1.fill_between(hist.index, hist['BB_Upper'], hist['BB_Lower'], color='gray', alpha=0.1, label='Bollinger', zorder=1)
-    
     ax1.set_title('QQQ Price Trend with Market Seasons', fontsize=12, fontweight='bold')
     ax1.legend(loc='upper left')
     ax1.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax1.get_xticklabels(), visible=False)
 
-    # 2. Volume (Moved to 2nd position) - Index 1
-    ax_vol = fig.add_subplot(gs[1], sharex=ax1)
+    # 2. Volume
     colors = ['red' if c < o else 'green' for c, o in zip(hist['Close'], hist['Open'])]
     ax_vol.bar(hist.index, hist['Volume'], color=colors, alpha=0.5, zorder=2)
     ax_vol.plot(hist.index, hist['Vol_MA20'], color='black', lw=1, zorder=2)
@@ -639,58 +621,26 @@ def create_charts(data):
     ax_vol.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_vol.get_xticklabels(), visible=False)
     
-    # 3. QQQ Trend Graph (Moved to 3rd position) - Index 2
-    # 배경: MACD 데드크로스(MACD < Signal) 구간을 다른 색으로 표시
-    ax_trend = fig.add_subplot(gs[2], sharex=ax1)
+    # 3. Trend Graph
     ax_trend.plot(hist.index, hist['Close'], label='QQQ', color='black', alpha=0.8, zorder=2)
     ax_trend.plot(hist.index, hist['MA20'], label='20MA', color='green', ls='--', lw=1, zorder=2)
     ax_trend.plot(hist.index, hist['MA50'], label='50MA', color='blue', ls='-', lw=1, zorder=2)
     
-    # MACD 데드크로스(MACD < Signal) 구간 배경 칠하기
+    # [최적화] 루프 제거: MACD Dead Cross 배경 칠하기
+    # axvspan 반복 대신 fill_between 사용
     dead_cross_mask = hist['MACD'] < hist['Signal']
-    # 그룹화하여 연속된 구간 찾기
-    hist['dc_group'] = (dead_cross_mask != dead_cross_mask.shift()).cumsum()
-    
-    for _, group in hist[dead_cross_mask].groupby('dc_group'):
-        start = group.index[0]
-        end = group.index[-1]
-        # Light Red/Pink color specifically for Dead Cross
-        ax_trend.axvspan(start, end, color='#FFCDD2', alpha=0.4, zorder=0, label='MACD < Signal (Dead)')
+    ax_trend.fill_between(hist.index, ax_trend.get_ylim()[0], ax_trend.get_ylim()[1], 
+                          where=dead_cross_mask, color='#FFCDD2', alpha=0.4, 
+                          transform=ax_trend.get_xaxis_transform(), zorder=0, label='MACD < Signal (Dead)')
 
-    # 중복 라벨 제거를 위한 범례 처리
     handles, labels = ax_trend.get_legend_handles_labels()
     by_label = dict(zip(labels, handles))
     ax_trend.legend(by_label.values(), by_label.keys(), loc='upper left')
-    
     ax_trend.set_title('QQQ Trend Check (Background: MACD Dead Cross)', fontsize=10, fontweight='bold')
     ax_trend.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_trend.get_xticklabels(), visible=False)
 
-    # 4. [NEW] SKEW Index Chart - Index 3 (4번째 위치)
-    ax_skew = fig.add_subplot(gs[3], sharex=ax1)
-    if 'skew_hist' in data and not data['skew_hist'].empty:
-        skew_data = data['skew_hist']
-        skew_data.index = skew_data.index.tz_localize(None).normalize()
-        # 최근 1년치 데이터만 표시 (x축 공유하므로 자동 조정됨)
-        ax_skew.plot(skew_data.index, skew_data['Close'], color='purple', label='SKEW Index', lw=1.2, zorder=2)
-        
-        # 150 라인 표시
-        ax_skew.axhline(150, color='red', ls='--', lw=1.5, label='Black Swan Risk (150)', zorder=2)
-        
-        curr_skew = skew_data['Close'].iloc[-1]
-        ax_skew.text(skew_data.index[-1], curr_skew, f"{curr_skew:.1f}", 
-                     color='purple', fontsize=9, fontweight='bold', ha='left', va='bottom')
-        
-        ax_skew.legend(loc='upper left', fontsize=8)
-    else:
-        ax_skew.text(0.5, 0.5, "No SKEW Data", transform=ax_skew.transAxes, ha='center', color='red')
-        
-    ax_skew.set_title('CBOE SKEW Index (Black Swan Risk)', fontsize=12, fontweight='bold')
-    ax_skew.grid(True, alpha=0.3, zorder=1)
-    plt.setp(ax_skew.get_xticklabels(), visible=False)
-
-    # 5. VIX Level (Absolute) - Index 4 (was 3)
-    ax_vix_abs = fig.add_subplot(gs[4], sharex=ax1)
+    # 4. VIX Absolute
     ax_vix_abs.plot(data['vix_hist'].index, data['vix_hist']['Close'], color='purple', label='VIX (Spot)', zorder=2)
     if data['vix3m_hist'] is not None and not data['vix3m_hist'].empty:
           ax_vix_abs.plot(data['vix3m_hist'].index, data['vix3m_hist']['Close'], color='gray', ls=':', label='VIX3M', zorder=2)
@@ -702,36 +652,27 @@ def create_charts(data):
     ax_vix_abs.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_vix_abs.get_xticklabels(), visible=False)
 
-    # 6. VIX Term Structure (Ratio) - Index 5 (was 4)
-    ax_ratio = fig.add_subplot(gs[5], sharex=ax1)
+    # 5. VIX Term Structure
     term_data = data.get('vix_term_df')
-    
     if term_data is not None and not term_data.empty:
         ax_ratio.plot(term_data.index, term_data['Ratio'], color='black', lw=1.2, label='Ratio (VIX/VIX3M)', zorder=2)
         ax_ratio.axhline(1.0, color='red', ls='--', alpha=0.8, lw=1.5, label='Threshold (1.0)', zorder=2)
         
         ax_ratio.fill_between(term_data.index, term_data['Ratio'], 1.0, 
-                             where=(term_data['Ratio'] > 1.0), 
-                             color='red', alpha=0.2, interpolate=True, label='Danger (Back.)', zorder=1)
-        
+                             where=(term_data['Ratio'] > 1.0), color='red', alpha=0.2, interpolate=True, zorder=1)
         ax_ratio.fill_between(term_data.index, term_data['Ratio'], 1.0, 
-                             where=(term_data['Ratio'] <= 1.0), 
-                             color='green', alpha=0.15, interpolate=True, label='Safe (Contango)', zorder=1)
-        
+                             where=(term_data['Ratio'] <= 1.0), color='green', alpha=0.15, interpolate=True, zorder=1)
         ax_ratio.fill_between(term_data.index, term_data['Ratio'], 0.9, 
-                             where=(term_data['Ratio'] < 0.9), 
-                             color='green', alpha=0.3, interpolate=True, label='Super Contango', zorder=1)
-        
+                             where=(term_data['Ratio'] < 0.9), color='green', alpha=0.3, interpolate=True, zorder=1)
         ax_ratio.legend(loc='upper right', fontsize=8)
     else:
-        ax_ratio.text(0.5, 0.5, "데이터 부족 (Data Insufficient)", transform=ax_ratio.transAxes, ha='center', color='red', zorder=2)
+        ax_ratio.text(0.5, 0.5, "데이터 부족", transform=ax_ratio.transAxes, ha='center', color='red', zorder=2)
         
     ax_ratio.set_title('VIX Term Structure (Ratio = VIX / VIX3M)', fontsize=12, fontweight='bold')
     ax_ratio.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_ratio.get_xticklabels(), visible=False)
 
-    # 7. RSI(14) - Index 6 (was 5)
-    ax_rsi = fig.add_subplot(gs[6], sharex=ax1)
+    # 6. RSI(14)
     ax_rsi.plot(hist.index, hist['RSI'], color='purple', label='RSI(14)', zorder=2)
     ax_rsi.axhline(70, color='red', ls='--', alpha=0.7, zorder=2)
     ax_rsi.axhline(30, color='green', ls='--', alpha=0.7, zorder=2)
@@ -742,8 +683,7 @@ def create_charts(data):
     ax_rsi.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_rsi.get_xticklabels(), visible=False)
 
-    # 8. MACD - Index 7 (was 6)
-    ax2 = fig.add_subplot(gs[7], sharex=ax1)
+    # 7. MACD
     ax2.plot(hist.index, hist['MACD'], label='MACD', color='blue', zorder=2)
     ax2.plot(hist.index, hist['Signal'], label='Signal', color='orange', zorder=2)
     ax2.bar(hist.index, hist['MACD']-hist['Signal'], color='gray', alpha=0.3, zorder=2)
@@ -752,8 +692,7 @@ def create_charts(data):
     ax2.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax2.get_xticklabels(), visible=False)
     
-    # 9. VVIX / VIX Ratio - Index 8 (was 7)
-    ax_ratio_vvix = fig.add_subplot(gs[8], sharex=ax1)
+    # 8. VVIX / VIX Ratio
     try:
         df_v = data['vix_hist'][['Close']].copy()
         df_vv = data['vvix_hist'][['Close']].copy()
@@ -767,11 +706,10 @@ def create_charts(data):
             ax_ratio_vvix.plot(merged_ratio.index, merged_ratio['Ratio'], color='#333333', lw=1.2, label='VVIX/VIX Ratio', zorder=2)
             ax_ratio_vvix.axhline(7.0, color='red', ls=':', alpha=0.5, zorder=2)
             ax_ratio_vvix.axhline(4.0, color='green', ls=':', alpha=0.5, zorder=2)
-            ax_ratio_vvix.axhline(5.5, color='gray', ls='--', alpha=0.5, lw=0.8, zorder=2)
             ax_ratio_vvix.fill_between(merged_ratio.index, merged_ratio['Ratio'], 7.0, 
-                                     where=(merged_ratio['Ratio'] > 7.0), color='red', alpha=0.2, label='Complacency', zorder=1)
+                                     where=(merged_ratio['Ratio'] > 7.0), color='red', alpha=0.2, zorder=1)
             ax_ratio_vvix.fill_between(merged_ratio.index, merged_ratio['Ratio'], 4.0, 
-                                     where=(merged_ratio['Ratio'] < 4.0), color='green', alpha=0.2, label='Panic', zorder=1)
+                                     where=(merged_ratio['Ratio'] < 4.0), color='green', alpha=0.2, zorder=1)
             ax_ratio_vvix.legend(loc='upper left', fontsize=8)
         else:
             ax_ratio_vvix.text(0.5, 0.5, "No Data", transform=ax_ratio_vvix.transAxes, ha='center', zorder=2)
@@ -782,25 +720,21 @@ def create_charts(data):
     ax_ratio_vvix.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_ratio_vvix.get_xticklabels(), visible=False)
 
-    # 10. RSI(2) - Index 9 (was 8)
-    ax_rsi2 = fig.add_subplot(gs[9], sharex=ax1)
+    # 9. RSI(2)
     ax_rsi2.plot(hist.index, hist['RSI_2'], color='gray', label='RSI(2)', linewidth=1.2, zorder=2)
     ax_rsi2.axhline(10, color='green', linestyle='--', alpha=0.7, zorder=2)
     ax_rsi2.axhline(90, color='red', linestyle='--', alpha=0.7, zorder=2)
-    ax_rsi2.fill_between(hist.index, hist['RSI_2'], 10, where=(hist['RSI_2'] < 10), color='green', alpha=0.3, label='Buy Zone', zorder=1)
-    ax_rsi2.fill_between(hist.index, hist['RSI_2'], 90, where=(hist['RSI_2'] > 90), color='red', alpha=0.3, label='Danger', zorder=1)
+    ax_rsi2.fill_between(hist.index, hist['RSI_2'], 10, where=(hist['RSI_2'] < 10), color='green', alpha=0.3, zorder=1)
+    ax_rsi2.fill_between(hist.index, hist['RSI_2'], 90, where=(hist['RSI_2'] > 90), color='red', alpha=0.3, zorder=1)
     ax_rsi2.scatter(hist.index[-1], hist['RSI_2'].iloc[-1], color='red', s=50, zorder=5)
     ax_rsi2.set_ylim(0, 100)
     ax_rsi2.set_title('RSI(2) - Short-term Pullback', fontsize=12, fontweight='bold')
-    ax_rsi2.legend(loc='upper right')
     ax_rsi2.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_rsi2.get_xticklabels(), visible=False)
 
-    # 11. ADL (Advance-Decline Line) - Index 10 (was 9)
-    ax_adl = fig.add_subplot(gs[10], sharex=ax1)
-    
+    # 10. ADL
     if 'ADL' in hist.columns and not hist['ADL'].isna().all():
-        ax_adl.plot(hist.index, hist['ADL'], color='black', label='ADL (Breath)', linewidth=1.5, zorder=2)
+        ax_adl.plot(hist.index, hist['ADL'], color='black', label='ADL', linewidth=1.5, zorder=2)
         ax_adl.plot(hist.index, hist['ADL_MA20'], color='orange', ls='--', label='ADL 20MA', linewidth=1, zorder=2)
         
         if not hist['ADL'].empty:
@@ -811,7 +745,6 @@ def create_charts(data):
         ax_adl.axhline(0, color='gray', ls=':', alpha=0.5, zorder=1)
         ax_adl.set_title('Advance-Decline Line (Raw)', fontsize=12, fontweight='bold')
         ax_adl.legend(loc='upper left')
-        
     else:
         ax_adl.text(0.5, 0.5, "⚠️ ADL Data Not Available", 
                    transform=ax_adl.transAxes, ha='center', va='center', 
@@ -821,23 +754,22 @@ def create_charts(data):
     ax_adl.grid(True, alpha=0.3, zorder=1)
     ax_adl.set_xlabel('Date', fontsize=10)
 
-    # === [모든 서브플롯에 배경색 일괄 적용] ===
-    # 배경색 칠하기를 위한 그룹화 (연속된 구간 찾기)
-    hist['group'] = (hist['Season'] != hist['Season'].shift()).cumsum()
+    # === [모든 서브플롯에 배경색 일괄 적용 (최적화: fill_between 활용)] ===
+    all_axes_except_trend = [ax1, ax_vol, ax_vix_abs, ax_ratio, ax_rsi, ax2, ax_ratio_vvix, ax_rsi2, ax_adl]
     
-    # 모든 axes를 리스트로 묶음 (Trend 차트는 제외 - 별도 MACD 배경 적용됨)
-    # 순서: Price, Volume, Trend(X), SKEW(NEW), VIX_Abs, Ratio, RSI, MACD, Ratio_VVIX, RSI2, ADL (총 11개 중 Trend 제외 10개)
-    all_axes_except_trend = [ax1, ax_vol, ax_skew, ax_vix_abs, ax_ratio, ax_rsi, ax2, ax_ratio_vvix, ax_rsi2, ax_adl]
-    
-    # 반복문으로 차트에 계절 배경색 적용 (Trend 차트 제외)
+    # [최적화] 시즌별 불리언 마스크를 사용하여 벡터화된 배경 칠하기
+    # 기존: for group loop -> 변경: 4번의 fill_between 호출로 해결
     for ax in all_axes_except_trend:
-        for _, group_data in hist.groupby('group'):
-            season = group_data['Season'].iloc[0]
-            start_date = group_data.index[0]
-            end_date = group_data.index[-1]
-            # zorder=0으로 설정하여 모든 데이터(라인, 바, 그리드 등) 뒤에 배경이 오도록 함
-            # alpha=0.4로 설정하여 가시성 확보
-            ax.axvspan(start_date, end_date, color=season_colors[season], alpha=0.4, zorder=0)
+        # y축 전역 변환 설정 (y축 범위 상관없이 전체 높이 칠하기 위함)
+        trans = ax.get_xaxis_transform()
+        
+        # 각 시즌별로 한 번씩만 fill_between 호출 (매우 빠름)
+        for season_name, color in season_colors.items():
+            mask = (hist['Season'] == season_name)
+            # mask가 True인 구간만 칠함
+            # ymin=0, ymax=1 (transform=trans 덕분에 축 전체 높이가 됨)
+            ax.fill_between(hist.index, 0, 1, where=mask, 
+                            color=color, alpha=0.4, transform=trans, zorder=0)
 
     plt.tight_layout()
     return fig
@@ -845,15 +777,13 @@ def create_charts(data):
 # === [메인 화면] ===
 def main():
     st.title("🦅 HK Advisory (Grand Master v22.5 - Lite)")
-    st.caption(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Logic: MACD 4-Zone + SKEW")
+    st.caption(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Logic: MACD 4-Zone | Optimized Mode")
 
     with st.spinner('시장 구조 분석 및 전략 최적화 중...'):
         try:
             data = get_market_data()
             season, score, log = analyze_expert_logic(data)
-            # return 값 추가됨 (strategy_type, strategy_basis)
             target_delta, verdict_text, profit_target, stop_loss, matrix_id, strat_type, strat_basis = determine_action(score, season, data, log)
-            # find_best_option에 strat_type 전달
             strategy = find_best_option(data['price'], data['iv'], target_delta, strat_type)
         except Exception as e:
             st.error(f"오류 발생: {e}")
@@ -1054,7 +984,7 @@ def main():
     ]
     st.markdown("".join(html_score_list), unsafe_allow_html=True)
 
-    # 3. Final Verdict (수정됨: 색상 변경 및 전략 로직 추가)
+    # 3. Final Verdict
     def get_matrix_style(current_id, row_id, bg_color):
         if current_id == row_id:
             return f"style='background-color: {bg_color}; border: 3px solid #666; font-weight: bold; color: #333; height: 50px;'"
@@ -1069,9 +999,8 @@ def main():
     """
 
     html_verdict_list = [
-        # 점수 색상 Blue -> Black 변경
         f"<h3>3. Final Verdict: <span style='color:white;'>{score}점</span> - Dynamic Exit Matrix</h3>",
-        strat_display, # 전략 추천 박스 추가
+        strat_display,
         "<div style='border: 2px solid #ccc; border-radius: 10px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1);'>",
         "<table style='border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; text-align: center;'>",
         f"<tr style='background-color: #333; color: white;'>",
