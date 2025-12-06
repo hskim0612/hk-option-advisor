@@ -3,7 +3,6 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 from scipy.stats import norm
-from scipy.signal import argrelextrema  # [추가됨] 고점 탐지용
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
@@ -13,7 +12,7 @@ APP_PASSWORD = "1979"
 
 # === [페이지 기본 설정] ===
 st.set_page_config(
-    page_title="HK 옵션투자자문 (Grand Master v22.5 - Jaws Divergence)",
+    page_title="HK 옵션투자자문 (Grand Master v22.5 - Lite)",
     page_icon="🦅",
     layout="wide"
 )
@@ -580,7 +579,7 @@ def find_best_option(price, iv, target_delta, strategy_type):
         print(f"Option Search Error: {e}")
         return None
 
-# === [6] 차트 (11개 서브플롯) - 수정됨: ADL Overlay Jaws + Divergence 추가 ===
+# === [6] 차트 (10개 서브플롯) - 수정됨: Jaws Divergence 제거됨 ===
 def create_charts(data):
     hist = data['hist'].copy()  # 원본 데이터 보호를 위해 복사
     
@@ -605,10 +604,9 @@ def create_charts(data):
     }
     
     # === 차트 그리기 시작 ===
-    # 높이를 늘리고 11행으로 변경 (ADL Jaws 추가됨)
-    fig = plt.figure(figsize=(10, 33))
-    # 높이 비율 조정: [10] ADL Overlay (1.5) 추가
-    gs = fig.add_gridspec(11, 1, height_ratios=[2, 0.6, 1.5, 1, 1, 1, 1, 1, 1, 1, 1.5])
+    # 높이 비율 조정: [10] ADL Overlay Jaws 제거됨 -> 10개 행으로 변경
+    fig = plt.figure(figsize=(10, 30))
+    gs = fig.add_gridspec(10, 1, height_ratios=[2, 0.6, 1.5, 1, 1, 1, 1, 1, 1, 1])
     
     # 1. Price Chart (Main) - Index 0
     ax1 = fig.add_subplot(gs[0])
@@ -791,87 +789,15 @@ def create_charts(data):
         ax_adl.set_title('Advance-Decline Line (No Data)', fontsize=12, fontweight='bold')
 
     ax_adl.grid(True, alpha=0.3, zorder=1)
-    plt.setp(ax_adl.get_xticklabels(), visible=False)
-
-    # [신규 수정] 11. Market Breadth Divergence (The Jaws with Bearish Div.) - Index 10
-    ax_jaws = fig.add_subplot(gs[10], sharex=ax1)
-    
-    if 'ADL' in hist.columns and not hist['ADL'].isna().all():
-        # 데이터 정규화 (0~1 Scaling)
-        def normalize_series(s):
-            return (s - s.min()) / (s.max() - s.min())
-        
-        norm_price = normalize_series(hist['Close'])
-        norm_adl = normalize_series(hist['ADL'])
-        
-        # Plotting
-        ax_jaws.plot(hist.index, norm_price, color='black', lw=1.5, label='Price (Norm)', zorder=2)
-        ax_jaws.plot(hist.index, norm_adl, color='blue', alpha=0.6, lw=1.5, label='ADL (Norm)', zorder=2)
-        
-        # Jaws Effect (Divergence = Red, Healthy = Green)
-        ax_jaws.fill_between(hist.index, norm_price, norm_adl, 
-                             where=(norm_price > norm_adl), 
-                             color='red', alpha=0.3, label='🐊 Jaws Opening (Div.)', zorder=1)
-        
-        ax_jaws.fill_between(hist.index, norm_price, norm_adl, 
-                             where=(norm_price <= norm_adl), 
-                             color='green', alpha=0.1, label='🤝 Parallel/Healthy', zorder=1)
-        
-        # --- [추가됨] Bearish Divergence Detection ---
-        # 1. 고점(Peaks) 탐지 (order=5: 좌우 5일, 총 11일 구간 최고점)
-        order = 5
-        peaks = argrelextrema(hist['Close'].values, np.greater, order=order)[0]
-        
-        div_x = []
-        div_y = []
-        div_lines = []
-
-        # 2. Divergence 로직: 주가는 더 높은데, ADL은 더 낮을 때
-        for i in range(1, len(peaks)):
-            prev = peaks[i-1]
-            curr = peaks[i]
-            
-            # 주가 상승 (Higher High)
-            if hist['Close'].iloc[curr] > hist['Close'].iloc[prev]:
-                # ADL 하락 (Lower High)
-                if hist['ADL'].iloc[curr] < hist['ADL'].iloc[prev]:
-                    # 다이버전스 포착
-                    div_x.append(hist.index[curr])
-                    div_y.append(norm_price.iloc[curr]) # 정규화된 차트에 표시해야 함
-                    div_lines.append((prev, curr))
-        
-        # 3. 시각화: 마커 및 연결선
-        if div_x:
-            ax_jaws.scatter(div_x, div_y, color='red', marker='v', s=100, zorder=5, label='Bearish Div. Signal')
-        
-        for prev, curr in div_lines:
-            # 주가 상승 궤적 (초록 점선)
-            ax_jaws.plot([hist.index[prev], hist.index[curr]], 
-                         [norm_price.iloc[prev], norm_price.iloc[curr]], 
-                         color='green', ls='--', alpha=0.5, lw=1)
-            # ADL 하락 궤적 (빨강 점선)
-            ax_jaws.plot([hist.index[prev], hist.index[curr]], 
-                         [norm_adl.iloc[prev], norm_adl.iloc[curr]], 
-                         color='red', ls='--', alpha=0.5, lw=1)
-
-        ax_jaws.set_title('Market Breadth Divergence (Red Marker = Bearish Divergence)', fontsize=12, fontweight='bold')
-        ax_jaws.legend(loc='upper left')
-        ax_jaws.set_ylim(-0.05, 1.05)
-    
-    else:
-        ax_jaws.text(0.5, 0.5, "Insufficient Data for Jaws", transform=ax_jaws.transAxes, ha='center', color='red')
-        ax_jaws.set_title('Jaws Strategy (No Data)', fontsize=12, fontweight='bold')
-        
-    ax_jaws.grid(True, alpha=0.3, zorder=1)
-    ax_jaws.set_xlabel('Date', fontsize=10)
+    ax_adl.set_xlabel('Date', fontsize=10)
 
     # === [모든 서브플롯에 배경색 일괄 적용] ===
     # 배경색 칠하기를 위한 그룹화 (연속된 구간 찾기)
     hist['group'] = (hist['Season'] != hist['Season'].shift()).cumsum()
     
     # 모든 axes를 리스트로 묶음 (Trend 차트는 제외 - 별도 MACD 배경 적용됨)
-    # 순서: Price, Volume, Trend(X), VIX_Abs, Ratio, RSI, MACD, Ratio_VVIX, RSI2, ADL, Jaws
-    all_axes_except_trend = [ax1, ax_vol, ax_vix_abs, ax_ratio, ax_rsi, ax2, ax_ratio_vvix, ax_rsi2, ax_adl, ax_jaws]
+    # 순서: Price, Volume, Trend(X), VIX_Abs, Ratio, RSI, MACD, Ratio_VVIX, RSI2, ADL (총 10개 중 Trend 제외 9개)
+    all_axes_except_trend = [ax1, ax_vol, ax_vix_abs, ax_ratio, ax_rsi, ax2, ax_ratio_vvix, ax_rsi2, ax_adl]
     
     # 반복문으로 차트에 계절 배경색 적용 (Trend 차트 제외)
     for ax in all_axes_except_trend:
@@ -888,8 +814,8 @@ def create_charts(data):
 
 # === [메인 화면] ===
 def main():
-    st.title("🦅 HK Advisory (Grand Master v22.5 - Jaws Divergence)")
-    st.caption(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Logic: MACD 4-Zone & Jaws Bearish Divergence")
+    st.title("🦅 HK Advisory (Grand Master v22.5 - Lite)")
+    st.caption(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Logic: MACD 4-Zone")
 
     with st.spinner('시장 구조 분석 및 전략 최적화 중...'):
         try:
