@@ -1,6 +1,3 @@
-다음 코드에서 adl볼린져 시각화를 추가해주시고 나머지 부분은 변경하지 말아주세요.  전체 코드를 보여 주세요.  
-
-
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -126,6 +123,16 @@ def get_market_data():
         hist['ADL'] = hist['Net_Issues'].cumsum() * 100
         hist['ADL_MA20'] = hist['ADL'].rolling(window=20).mean()
     
+    # [NEW] ADL Bollinger Bands Logic
+    hist['ADL_Std'] = hist['ADL'].rolling(window=20).std()
+    hist['ADL_Upper'] = hist['ADL_MA20'] + (hist['ADL_Std'] * 2)
+    hist['ADL_Lower'] = hist['ADL_MA20'] - (hist['ADL_Std'] * 2)
+    
+    # ADL Z-Score (Avoid division by zero)
+    numerator = hist['ADL'] - hist['ADL_MA20']
+    denominator = hist['ADL_Std']
+    hist['ADL_Z'] = np.where(denominator == 0, 0, numerator / denominator)
+
     # 2. Process VIX, VIX3M, VVIX, SKEW
     vix_hist = results["^VIX"]['hist']
     vvix_hist = results["^VVIX"]['hist']
@@ -199,6 +206,7 @@ def get_market_data():
         'vix': curr_vix, 'vix_prev': prev_vix,
         'vix3m': vix3m_val,
         'iv': current_iv,
+        'adl_z': hist['ADL_Z'].iloc[-1], # [NEW] Pass ADL Z-Score
         'hist': hist, 'vix_hist': vix_hist, 'vix3m_hist': vix3m_hist, 'vvix_hist': vvix_hist,
         'skew_hist': skew_hist,
         'vix_term_df': vix_term_df
@@ -619,8 +627,9 @@ def create_charts(data):
         'SUMMER': '#FFEBEE', 'AUTUMN': '#FFF3E0', 'WINTER': '#E3F2FD', 'SPRING': '#E8F5E9'
     }
     
-    fig = plt.figure(figsize=(10, 33))
-    gs = fig.add_gridspec(11, 1, height_ratios=[2, 0.6, 1.5, 1, 1, 1, 1, 1, 1, 1, 1])
+    # [UPDATE] Figure Size Increased and Grid Expanded to 12 rows
+    fig = plt.figure(figsize=(10, 36))
+    gs = fig.add_gridspec(12, 1, height_ratios=[2, 0.6, 1.5, 1, 1, 1, 1, 1, 1, 1, 1, 1.5])
     
     ax1 = fig.add_subplot(gs[0])
     ax_vol = fig.add_subplot(gs[1], sharex=ax1)
@@ -633,6 +642,7 @@ def create_charts(data):
     ax_ratio_vvix = fig.add_subplot(gs[8], sharex=ax1)
     ax_rsi2 = fig.add_subplot(gs[9], sharex=ax1)
     ax_adl = fig.add_subplot(gs[10], sharex=ax1)
+    ax_adl_band = fig.add_subplot(gs[11], sharex=ax1) # [NEW]
 
     # 1. Price Chart
     ax1.plot(hist.index, hist['Close'], label='QQQ', color='black', alpha=0.9, zorder=2)
@@ -783,30 +793,42 @@ def create_charts(data):
     ax_rsi2.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_rsi2.get_xticklabels(), visible=False)
 
-    # 11. ADL
-    if 'ADL' in hist.columns and not hist['ADL'].isna().all():
-        ax_adl.plot(hist.index, hist['ADL'], color='black', label='ADL', linewidth=1.5, zorder=2)
-        ax_adl.plot(hist.index, hist['ADL_MA20'], color='orange', ls='--', label='ADL 20MA', linewidth=1, zorder=2)
-        
-        if not hist['ADL'].empty:
-            last_adl = hist['ADL'].iloc[-1]
-            ax_adl.text(hist.index[-1], last_adl, f"{last_adl:.0f}", 
-                        color='black', fontsize=9, fontweight='bold', ha='left', va='center')
-        
-        ax_adl.axhline(0, color='gray', ls=':', alpha=0.5, zorder=1)
-        ax_adl.set_title('Advance-Decline Line (Raw)', fontsize=12, fontweight='bold')
-        ax_adl.legend(loc='upper left')
-    else:
-        ax_adl.text(0.5, 0.5, "⚠️ ADL Data Not Available", 
-                   transform=ax_adl.transAxes, ha='center', va='center', 
-                   fontsize=12, color='red', fontweight='bold')
-        ax_adl.set_title('Advance-Decline Line (No Data)', fontsize=12, fontweight='bold')
-
+    # 11. ADL (Raw)
+    ax_adl.plot(hist.index, hist['ADL'], color='black', label='ADL', linewidth=1.5, zorder=2)
+    ax_adl.plot(hist.index, hist['ADL_MA20'], color='orange', ls='--', label='ADL 20MA', linewidth=1, zorder=2)
+    
+    if not hist['ADL'].empty:
+        last_adl = hist['ADL'].iloc[-1]
+        ax_adl.text(hist.index[-1], last_adl, f"{last_adl:.0f}", 
+                    color='black', fontsize=9, fontweight='bold', ha='left', va='center')
+    
+    ax_adl.axhline(0, color='gray', ls=':', alpha=0.5, zorder=1)
+    ax_adl.set_title('Advance-Decline Line (Raw)', fontsize=12, fontweight='bold')
+    ax_adl.legend(loc='upper left')
     ax_adl.grid(True, alpha=0.3, zorder=1)
     ax_adl.set_xlabel('Date', fontsize=10)
+    plt.setp(ax_adl.get_xticklabels(), visible=False) # Hide X labels to match others
+
+    # 12. [NEW] ADL Bollinger Band
+    if 'ADL_Upper' in hist.columns:
+        ax_adl_band.plot(hist.index, hist['ADL'], color='black', lw=1.5, zorder=3, label='ADL')
+        ax_adl_band.plot(hist.index, hist['ADL_Upper'], color='red', ls='--', lw=1, zorder=2, label='Upper')
+        ax_adl_band.plot(hist.index, hist['ADL_Lower'], color='green', ls='--', lw=1, zorder=2, label='Lower')
+        ax_adl_band.fill_between(hist.index, hist['ADL_Upper'], hist['ADL_Lower'], color='gray', alpha=0.1, zorder=1)
+        
+        curr_z = hist['ADL_Z'].iloc[-1]
+        t_color = 'red' if curr_z > 2.0 else 'green' if curr_z < -2.0 else 'black'
+        ax_adl_band.text(hist.index[-1], hist['ADL'].iloc[-1], f" Z:{curr_z:.2f}", color=t_color, fontweight='bold', ha='left')
+        ax_adl_band.set_title('ADL Bollinger Bands (Market Breadth)', fontsize=12, fontweight='bold')
+        ax_adl_band.legend(loc='upper left', fontsize=8)
+    else:
+        ax_adl_band.text(0.5, 0.5, "No ADL Data", transform=ax_adl_band.transAxes, ha='center')
+
+    ax_adl_band.grid(True, alpha=0.3)
+    ax_adl_band.set_xlabel('Date')
 
     # === [Background Coloring] ===
-    all_axes_except_trend = [ax1, ax_vol, ax_skew, ax_vix_abs, ax_ratio, ax_rsi, ax2, ax_ratio_vvix, ax_rsi2, ax_adl]
+    all_axes_except_trend = [ax1, ax_vol, ax_skew, ax_vix_abs, ax_ratio, ax_rsi, ax2, ax_ratio_vvix, ax_rsi2, ax_adl, ax_adl_band]
     
     for ax in all_axes_except_trend:
         trans = ax.get_xaxis_transform()
@@ -879,6 +901,13 @@ def main():
     
     if log.get('vvix_trap') == 'detected': st.sidebar.error("VVIX Trap: ⚠️ DETECTED")
     else: st.sidebar.success("VVIX Trap: ✅ None")
+    
+    # [NEW SIDEBAR] ADL Z-Score
+    st.sidebar.markdown("---")
+    adl_z = data.get('adl_z', 0)
+    st.sidebar.metric("ADL Z-Score", f"{adl_z:.2f}")
+    if adl_z > 2.0: st.sidebar.error("Breadth: Overbought 🚨")
+    elif adl_z < -2.0: st.sidebar.success("Breadth: Oversold (Buy Dip) ✅")
 
     st.sidebar.markdown("---")
     st.sidebar.subheader(f"📊 Total Score: {score}")
