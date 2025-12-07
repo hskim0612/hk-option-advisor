@@ -6,23 +6,23 @@ from scipy.stats import norm
 from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-import concurrent.futures # [최적화] 병렬 처리를 위한 모듈
+import concurrent.futures # [Optimization] Parallel processing module
 
-# === [앱 보안 설정] ===
+# === [App Security] ===
 APP_PASSWORD = "1979"
 
-# === [페이지 기본 설정] ===
+# === [Page Configuration] ===
 st.set_page_config(
-    page_title="HK 옵션투자자문 (Grand Master v22.5 - Lite)",
+    page_title="HK Options Advisory (Grand Master v23.0 - SKEW Logic)",
     page_icon="🦅",
     layout="wide"
 )
 
-# 차트 스타일 설정
+# Chart Style
 plt.style.use('seaborn-v0_8-darkgrid')
 plt.rcParams['font.family'] = 'sans-serif'
 
-# === [0] 로그인 화면 ===
+# === [0] Login Screen ===
 def check_password():
     if "password_correct" not in st.session_state:
         st.session_state.password_correct = False
@@ -30,23 +30,23 @@ def check_password():
     if st.session_state.password_correct:
         return True
 
-    st.title("🔒 HK Advisory 보안 접속")
-    password = st.text_input("비밀번호를 입력하세요", type="password")
+    st.title("🔒 HK Advisory Secure Access")
+    password = st.text_input("Enter Password", type="password")
     
-    if st.button("로그인"):
+    if st.button("Login"):
         if password == APP_PASSWORD:
             st.session_state.password_correct = True
             st.rerun()
         else:
-            st.error("비밀번호가 틀렸습니다.")
+            st.error("Incorrect Password")
     return False
 
 if not check_password():
     st.stop()
 
-# === [1] 데이터 수집 및 처리 (최적화: 병렬 처리) ===
+# === [1] Data Collection & Processing (Optimized) ===
 def fetch_ticker_data(ticker, period="2y"):
-    """[최적화] 개별 티커 데이터 수집 헬퍼 함수"""
+    """[Optimization] Helper function for individual ticker fetch"""
     try:
         t = yf.Ticker(ticker)
         hist = t.history(period=period)
@@ -56,30 +56,29 @@ def fetch_ticker_data(ticker, period="2y"):
 
 @st.cache_data(ttl=1800)
 def get_market_data():
-    # [최적화] SKEW를 포함한 모든 티커를 병렬로 동시 수집
+    # [Optimization] Fetch all tickers including SKEW in parallel
     tickers_to_fetch = [
         ("QQQ", "2y"), ("^ADD", "2y"), ("^VIX", "1y"), 
         ("^VVIX", "1y"), ("^SKEW", "1y"), ("^VIX3M", "1y")
     ]
     
     results = {}
-    # max_workers를 6으로 늘려 모든 티커 동시 처리
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
         future_to_ticker = {executor.submit(fetch_ticker_data, t, p): t for t, p in tickers_to_fetch}
         for future in concurrent.futures.as_completed(future_to_ticker):
             ticker, t_obj, hist = future.result()
             results[ticker] = {'obj': t_obj, 'hist': hist}
 
-    # 1. QQQ 데이터 처리
+    # 1. Process QQQ Data
     qqq = results["QQQ"]['obj']
     hist = results["QQQ"]['hist'].copy()
     
-    # 이동평균선 및 보조지표 (벡터 연산)
+    # Moving Averages & Indicators (Vectorized)
     hist['MA20'] = hist['Close'].rolling(window=20).mean()
     hist['MA50'] = hist['Close'].rolling(window=50).mean()
     hist['MA200'] = hist['Close'].rolling(window=200).mean()
     
-    # 볼린저 밴드
+    # Bollinger Bands
     hist['BB_Mid'] = hist['MA20']
     hist['BB_Std'] = hist['Close'].rolling(window=20).std()
     hist['BB_Upper'] = hist['BB_Mid'] + (hist['BB_Std'] * 2)
@@ -106,7 +105,7 @@ def get_market_data():
     
     hist['Vol_MA20'] = hist['Volume'].rolling(window=20).mean()
 
-    # ADL 데이터 처리
+    # Process ADL Data
     add_hist = results["^ADD"]['hist']
     if not add_hist.empty and len(add_hist) > 10:
         hist.index = hist.index.tz_localize(None).normalize()
@@ -118,13 +117,13 @@ def get_market_data():
         hist['ADL_MA20'] = hist['ADL'].rolling(window=20).mean()
     else:
         # Fallback Logic
-        print("⚠️ ADL 데이터 수집 실패 (^ADD) - Fallback 사용")
+        print("⚠️ ADL Fetch Failed (^ADD) - Using Fallback")
         hist['Net_Issues'] = np.where(hist['Close'] > hist['Close'].shift(1), 1, -1)
         hist['Net_Issues'].iloc[0] = 0
         hist['ADL'] = hist['Net_Issues'].cumsum() * 100
         hist['ADL_MA20'] = hist['ADL'].rolling(window=20).mean()
     
-    # 2. VIX, VIX3M, VVIX, SKEW 데이터 처리
+    # 2. Process VIX, VIX3M, VVIX, SKEW
     vix_hist = results["^VIX"]['hist']
     vvix_hist = results["^VVIX"]['hist']
     vix3m_hist = results["^VIX3M"]['hist']
@@ -162,6 +161,13 @@ def get_market_data():
             vvix_hist.index = vvix_hist.index.tz_localize(None).normalize()
     except Exception as e:
         print(f"Error processing VVIX: {e}")
+        
+    # Process SKEW (Ensure Timezone compatibility)
+    try:
+        if not skew_hist.empty:
+            skew_hist.index = skew_hist.index.tz_localize(None).normalize()
+    except Exception as e:
+        print(f"Error processing SKEW: {e}")
 
     curr = hist.iloc[-1]
     prev = hist.iloc[-2]
@@ -195,7 +201,7 @@ def get_market_data():
         'vix_term_df': vix_term_df
     }
 
-# === [2] 신규 로직 함수 ===
+# === [2] Advanced Logic Functions ===
 def detect_capitulation(data, log):
     if data['vix_term_df'] is None:
         log['capitulation'] = 'none'
@@ -264,7 +270,7 @@ def detect_rsi2_dip(data, log):
     log['rsi2_dip'] = 'none'
     return 0
 
-# === [3] 전문가 로직 (MACD 4-Zone Matrix 적용) ===
+# === [3] Expert Logic (MACD 4-Zone + SKEW) ===
 def analyze_expert_logic(d):
     if d['price'] > d['ma50'] and d['price'] > d['ma200']: season = "SUMMER"
     elif d['price'] < d['ma50'] and d['price'] > d['ma200']: season = "AUTUMN"
@@ -393,7 +399,7 @@ def analyze_expert_logic(d):
     else:
         log['vol'] = 'normal'
 
-    # 7. MACD Logic (4-Zone Strategy 적용)
+    # 7. MACD Logic (4-Zone Strategy)
     macd_val = d['macd']
     signal_val = d['signal']
     
@@ -417,7 +423,32 @@ def analyze_expert_logic(d):
             score += pts
             log['macd'] = 'zero_down_dead'
 
-    # === [신규 항목 점수 누적] ===
+    # 8. [MODIFIED] SKEW Logic (Black Swan Filter)
+    # 155 이상: -15점 (강제 매매 중단급 페널티)
+    # 145~155: -3점 (고위험 감점)
+    # 115~145: 0점 (정상)
+    # 115 미만: -1점 (안일함)
+    if d['skew_hist'] is not None and not d['skew_hist'].empty:
+        curr_skew = d['skew_hist']['Close'].iloc[-1]
+        log['curr_skew'] = curr_skew
+        
+        if curr_skew >= 155:
+            score += -15
+            log['skew'] = 'black_swan'  # Kill Switch Trigger
+        elif 145 <= curr_skew < 155:
+            score += -3
+            log['skew'] = 'high_risk'
+        elif 115 <= curr_skew < 145:
+            score += 0
+            log['skew'] = 'normal'
+        else: # < 115
+            score += -1
+            log['skew'] = 'complacency'
+    else:
+        log['skew'] = 'none'
+        log['curr_skew'] = 0
+
+    # === [Accumulate Special Scores] ===
     pts_cap = detect_capitulation(d, log)
     score += pts_cap
     
@@ -429,18 +460,22 @@ def analyze_expert_logic(d):
 
     return season, score, log
 
-# === [4] 행동 결정 ===
+# === [4] Action Decision ===
 def determine_action(score, season, data, log):
     vix_pct_change = ((data['vix'] - data['vix_prev']) / data['vix_prev']) * 100
     current_vix = data['vix']
     
-    # 1. Panic Check
+    # 1. Panic Check (Kill Switch)
+    # [NEW] SKEW Black Swan Check
+    if log.get('skew') == 'black_swan':
+        return None, f"⛔ Trading Halted (Black Swan Risk: {log.get('curr_skew'):.1f})", "-", "-", "panic", "-", "-"
+        
     if log.get('term') == 'backwardation':
-        return None, "⛔ 매매 중단 (System Collapse)", "-", "-", "panic", "-", "-"
+        return None, "⛔ Trading Halted (System Collapse)", "-", "-", "panic", "-", "-"
     if vix_pct_change > 15.0:
-        return None, "⛔ 매매 중단 (VIX 급등)", "-", "-", "panic", "-", "-"
+        return None, "⛔ Trading Halted (VIX Surge)", "-", "-", "panic", "-", "-"
     if log.get('vvix_trap') == 'detected':
-        return None, "⛔ 매매 중단 (VVIX Trap)", "-", "-", "panic", "-", "-"
+        return None, "⛔ Trading Halted (VVIX Trap)", "-", "-", "panic", "-", "-"
     
     # 2. Score Grade & Strategy Selection
     verdict_text = ""
@@ -449,29 +484,29 @@ def determine_action(score, season, data, log):
     matrix_id = ""
     target_delta = None
     
-    # 등급 결정
+    # Grading
     if score >= 20:
-        verdict_text = "💎💎 극강 추세 (Super Strong)"
+        verdict_text = "💎💎 Super Strong"
         matrix_id = "super_strong"
         profit_target = "100%+"
         stop_loss = "-300%"
     elif score >= 12:
-        verdict_text = "💎 추세 추종 (Strong)"
+        verdict_text = "💎 Strong"
         matrix_id = "strong"
         profit_target = "75%"
         stop_loss = "-300%"
     elif 8 <= score < 12:
-        verdict_text = "✅ 표준 대응 (Standard)"
+        verdict_text = "✅ Standard"
         matrix_id = "standard"
         profit_target = "50%"
         stop_loss = "-200%"
     elif 5 <= score < 8:
-        verdict_text = "⚠️ 속전 속결 (Hit & Run)"
+        verdict_text = "⚠️ Hit & Run (Weak)"
         matrix_id = "weak"
         profit_target = "30%"
         stop_loss = "-150%"
     else:
-        verdict_text = "🛡️ 진입 보류"
+        verdict_text = "🛡️ No Entry"
         matrix_id = "no_entry"
         return None, verdict_text, "-", "-", matrix_id, "-", "-"
 
@@ -481,20 +516,19 @@ def determine_action(score, season, data, log):
 
     if current_vix < 18.0 and score >= 12:
         strategy_type = "CDS"
-        strategy_basis = f"VIX {current_vix:.1f} (저변동성) + 점수 {score} (강세) 👉 방향성 베팅(가성비)"
+        strategy_basis = f"VIX {current_vix:.1f} (Low) + Score {score} (Bull) 👉 Directional Bet"
         target_delta = 0.55 
     else:
         strategy_type = "PCS"
         if current_vix >= 18.0:
-            strategy_basis = f"VIX {current_vix:.1f} (고변동성) 👉 프리미엄 매도 유리"
+            strategy_basis = f"VIX {current_vix:.1f} (High) 👉 Sell Premium (Credit)"
         else:
-            strategy_basis = f"점수 {score} (중립/완만) 👉 시간가치(Theta) 확보 유리"
+            strategy_basis = f"Score {score} (Neutral) 👉 Harvest Theta"
         target_delta = -0.10 
 
     return target_delta, verdict_text, profit_target, stop_loss, matrix_id, strategy_type, strategy_basis
 
-# === [5] 옵션 찾기 (최적화: 벡터화 연산 적용) ===
-# [최적화] NumPy 브로드캐스팅을 위해 scalar input -> array input 대응
+# === [5] Option Finder (Vectorized) ===
 def calculate_d1(S, K, T, r, sigma):
     return (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
 
@@ -505,12 +539,10 @@ def find_best_option(price, iv, target_delta, strategy_type):
     
     qqq = yf.Ticker("QQQ")
     try:
-        # options 속성은 문자열 리스트라 빠름
         options = qqq.options
         valid_dates = []
         now = datetime.now()
         
-        # [최적화] DTE 계산
         for d_str in options:
             d_date = datetime.strptime(d_str, "%Y-%m-%d")
             days_left = (d_date - now).days
@@ -523,7 +555,7 @@ def find_best_option(price, iv, target_delta, strategy_type):
         T = dte / 365.0
         r = 0.045
         
-        # [최적화] 검색 범위 설정
+        # Search Range
         if strategy_type == "CDS":
             start_k = int(price * 0.9)
             end_k = int(price * 1.1)
@@ -531,11 +563,8 @@ def find_best_option(price, iv, target_delta, strategy_type):
             start_k = int(price * 0.5)
             end_k = int(price)
 
-        # [최적화] NumPy 벡터 연산으로 루프 제거
-        # 검색 범위 내의 행사가 배열 생성
         strikes = np.arange(start_k, end_k)
         
-        # d1 및 delta 벡터 계산
         d1 = calculate_d1(price, strikes, T, r, iv)
         
         if strategy_type == "CDS":
@@ -543,7 +572,6 @@ def find_best_option(price, iv, target_delta, strategy_type):
         else: # PCS
             deltas = norm.cdf(d1) - 1
             
-        # 목표 델타와의 차이 계산 및 최소값 인덱스 찾기
         diffs = np.abs(deltas - target_delta)
         best_idx = np.argmin(diffs)
         
@@ -571,11 +599,11 @@ def find_best_option(price, iv, target_delta, strategy_type):
         print(f"Option Search Error: {e}")
         return None
 
-# === [6] 차트 (최적화: 렌더링 속도 개선) ===
+# === [6] Charts (Optimized Rendering) ===
 def create_charts(data):
     hist = data['hist'].copy()
     
-    # 4계절 계산
+    # 4 Seasons
     cond_summer = (hist['Close'] > hist['MA50']) & (hist['Close'] > hist['MA200'])
     cond_autumn = (hist['Close'] < hist['MA50']) & (hist['Close'] > hist['MA200'])
     cond_winter = (hist['Close'] < hist['MA50']) & (hist['Close'] < hist['MA200'])
@@ -588,15 +616,13 @@ def create_charts(data):
         'SUMMER': '#FFEBEE', 'AUTUMN': '#FFF3E0', 'WINTER': '#E3F2FD', 'SPRING': '#E8F5E9'
     }
     
-    # [최적화] SKEW 포함 11개 서브플롯
     fig = plt.figure(figsize=(10, 33))
     gs = fig.add_gridspec(11, 1, height_ratios=[2, 0.6, 1.5, 1, 1, 1, 1, 1, 1, 1, 1])
     
-    # --- 서브플롯 정의 ---
     ax1 = fig.add_subplot(gs[0])
     ax_vol = fig.add_subplot(gs[1], sharex=ax1)
     ax_trend = fig.add_subplot(gs[2], sharex=ax1)
-    ax_skew = fig.add_subplot(gs[3], sharex=ax1) # [NEW] SKEW
+    ax_skew = fig.add_subplot(gs[3], sharex=ax1) 
     ax_vix_abs = fig.add_subplot(gs[4], sharex=ax1)
     ax_ratio = fig.add_subplot(gs[5], sharex=ax1)
     ax_rsi = fig.add_subplot(gs[6], sharex=ax1)
@@ -629,7 +655,6 @@ def create_charts(data):
     ax_trend.plot(hist.index, hist['MA20'], label='20MA', color='green', ls='--', lw=1, zorder=2)
     ax_trend.plot(hist.index, hist['MA50'], label='50MA', color='blue', ls='-', lw=1, zorder=2)
     
-    # [최적화] 루프 제거: MACD Dead Cross 배경 칠하기
     dead_cross_mask = hist['MACD'] < hist['Signal']
     ax_trend.fill_between(hist.index, ax_trend.get_ylim()[0], ax_trend.get_ylim()[1], 
                           where=dead_cross_mask, color='#FFCDD2', alpha=0.4, 
@@ -642,13 +667,16 @@ def create_charts(data):
     ax_trend.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_trend.get_xticklabels(), visible=False)
 
-    # 4. [NEW] SKEW Index Chart
+    # 4. SKEW Index Chart (Modified Visual)
     if 'skew_hist' in data and not data['skew_hist'].empty:
         skew_data = data['skew_hist']
         skew_data.index = skew_data.index.tz_localize(None).normalize()
         ax_skew.plot(skew_data.index, skew_data['Close'], color='purple', label='SKEW Index', lw=1.2, zorder=2)
         
-        ax_skew.axhline(150, color='red', ls='--', lw=1.5, label='Black Swan Risk (150)', zorder=2)
+        # Risk Lines
+        ax_skew.axhline(155, color='red', ls='-', lw=2, label='Black Swan (155)', zorder=2)
+        ax_skew.axhline(145, color='orange', ls='--', lw=1.5, label='High Risk (145)', zorder=2)
+        ax_skew.axhline(115, color='green', ls=':', lw=1.5, label='Complacency (115)', zorder=2)
         
         curr_skew = skew_data['Close'].iloc[-1]
         ax_skew.text(skew_data.index[-1], curr_skew, f"{curr_skew:.1f}", 
@@ -684,11 +712,9 @@ def create_charts(data):
                              where=(term_data['Ratio'] > 1.0), color='red', alpha=0.2, interpolate=True, zorder=1)
         ax_ratio.fill_between(term_data.index, term_data['Ratio'], 1.0, 
                              where=(term_data['Ratio'] <= 1.0), color='green', alpha=0.15, interpolate=True, zorder=1)
-        ax_ratio.fill_between(term_data.index, term_data['Ratio'], 0.9, 
-                             where=(term_data['Ratio'] < 0.9), color='green', alpha=0.3, interpolate=True, zorder=1)
         ax_ratio.legend(loc='upper right', fontsize=8)
     else:
-        ax_ratio.text(0.5, 0.5, "데이터 부족", transform=ax_ratio.transAxes, ha='center', color='red', zorder=2)
+        ax_ratio.text(0.5, 0.5, "Data Insufficient", transform=ax_ratio.transAxes, ha='center', color='red', zorder=2)
         
     ax_ratio.set_title('VIX Term Structure (Ratio = VIX / VIX3M)', fontsize=12, fontweight='bold')
     ax_ratio.grid(True, alpha=0.3, zorder=1)
@@ -776,16 +802,11 @@ def create_charts(data):
     ax_adl.grid(True, alpha=0.3, zorder=1)
     ax_adl.set_xlabel('Date', fontsize=10)
 
-    # === [모든 서브플롯에 배경색 일괄 적용 (최적화: fill_between 활용)] ===
-    # SKEW 포함 10개 서브플롯 (Trend 제외)
+    # === [Background Coloring] ===
     all_axes_except_trend = [ax1, ax_vol, ax_skew, ax_vix_abs, ax_ratio, ax_rsi, ax2, ax_ratio_vvix, ax_rsi2, ax_adl]
     
-    # [최적화] 시즌별 불리언 마스크를 사용하여 벡터화된 배경 칠하기
     for ax in all_axes_except_trend:
-        # y축 전역 변환 설정 (y축 범위 상관없이 전체 높이 칠하기 위함)
         trans = ax.get_xaxis_transform()
-        
-        # 각 시즌별로 한 번씩만 fill_between 호출 (매우 빠름)
         for season_name, color in season_colors.items():
             mask = (hist['Season'] == season_name)
             ax.fill_between(hist.index, 0, 1, where=mask, 
@@ -794,25 +815,25 @@ def create_charts(data):
     plt.tight_layout()
     return fig
 
-# === [메인 화면] ===
+# === [Main] ===
 def main():
-    st.title("🦅 HK Advisory (Grand Master v22.5 - Lite)")
-    st.caption(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Logic: MACD 4-Zone + SKEW | Optimized Mode")
+    st.title("🦅 HK Options Advisory (Grand Master v23.0 - SKEW Logic)")
+    st.caption(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Logic: MACD 4-Zone + SKEW (Safety) | Optimized")
 
-    with st.spinner('시장 구조 분석 및 전략 최적화 중...'):
+    with st.spinner('Analyzing Market Structure...'):
         try:
             data = get_market_data()
             season, score, log = analyze_expert_logic(data)
             target_delta, verdict_text, profit_target, stop_loss, matrix_id, strat_type, strat_basis = determine_action(score, season, data, log)
             strategy = find_best_option(data['price'], data['iv'], target_delta, strat_type)
         except Exception as e:
-            st.error(f"오류 발생: {e}")
+            st.error(f"Error: {e}")
             import traceback
             st.text(traceback.format_exc())
             return
 
     # [Sidebar]
-    st.sidebar.title("🛠️ 시스템 상태")
+    st.sidebar.title("🛠️ System Status")
     st.sidebar.markdown("---")
     
     term_df = data.get('vix_term_df')
@@ -821,13 +842,21 @@ def main():
         st.sidebar.metric("Current Ratio", f"{curr_ratio:.4f}")
     
     st.sidebar.markdown("---")
-    st.sidebar.subheader("🔍 실시간 위험 지표")
+    st.sidebar.subheader("🔍 Risk Indicators")
 
     # Ratio
     ratio_val = data['vix'] / data['vix3m'] if data['vix3m'] else 1.0
     if ratio_val > 1.0: st.sidebar.error(f"Ratio: {ratio_val:.4f} ⚠️")
     elif ratio_val < 0.9: st.sidebar.success(f"Ratio: {ratio_val:.4f} ✅")
     else: st.sidebar.info(f"Ratio: {ratio_val:.4f}")
+
+    # SKEW Status (New)
+    skew_status = log.get('skew', 'none')
+    curr_skew = log.get('curr_skew', 0)
+    if skew_status == 'black_swan': st.sidebar.error(f"SKEW: {curr_skew:.1f} (BLACK SWAN 🚨)")
+    elif skew_status == 'high_risk': st.sidebar.warning(f"SKEW: {curr_skew:.1f} (High Risk)")
+    elif skew_status == 'complacency': st.sidebar.info(f"SKEW: {curr_skew:.1f} (Complacency)")
+    else: st.sidebar.success(f"SKEW: {curr_skew:.1f} (Normal)")
 
     # VVIX Change
     vvix_hist = data['vvix_hist']['Close']
@@ -838,23 +867,23 @@ def main():
 
     # RSI(2)
     rsi2_val = data['rsi2']
-    if rsi2_val < 10: st.sidebar.success(f"RSI(2): {rsi2_val:.1f} (눌림목) ✅")
+    if rsi2_val < 10: st.sidebar.success(f"RSI(2): {rsi2_val:.1f} (Dip) ✅")
     else: st.sidebar.info(f"RSI(2): {rsi2_val:.1f}")
 
     # Signals
-    if log.get('capitulation') == 'detected': st.sidebar.success("투매 신호: ✅ 발생")
-    else: st.sidebar.info("투매 신호: ❌ 미발생")
+    if log.get('capitulation') == 'detected': st.sidebar.success("Capitulation: ✅ DETECTED")
+    else: st.sidebar.info("Capitulation: ❌ None")
     
-    if log.get('vvix_trap') == 'detected': st.sidebar.error("VVIX Trap: ⚠️ 감지됨")
-    else: st.sidebar.success("VVIX Trap: ✅ 없음")
+    if log.get('vvix_trap') == 'detected': st.sidebar.error("VVIX Trap: ⚠️ DETECTED")
+    else: st.sidebar.success("VVIX Trap: ✅ None")
 
     st.sidebar.markdown("---")
-    st.sidebar.subheader(f"📊 총점: {score}점")
-    st.sidebar.markdown(f"**판정:** {verdict_text}")
+    st.sidebar.subheader(f"📊 Total Score: {score}")
+    st.sidebar.markdown(f"**Verdict:** {verdict_text}")
     if strat_type:
-        st.sidebar.info(f"전략: {strat_type}")
+        st.sidebar.info(f"Strategy: {strat_type}")
 
-    # 스타일 헬퍼
+    # Style Helpers
     def hl_score(category, row_state, col_season):
         base = "style='border: 1px solid #ddd; padding: 4px; color: black; background-color: white;'"
         current_val = log.get(category, '')
@@ -877,6 +906,7 @@ def main():
     th_style = "style='border: 1px solid #ddd; padding: 4px; color: black; background-color: #f2f2f2;'"
     vix_ratio_disp = f"{log.get('vix_ratio', 0):.2f}"
     z_disp = f"{log.get('z_score', 0):.2f}"
+    skew_disp = f"{log.get('curr_skew', 0):.1f}"
 
     # 1. Season Matrix
     html_season_list = [
@@ -885,10 +915,10 @@ def main():
         "<tr>",
         f"<th {th_style}>Season</th><th {th_style}>Condition</th><th {th_style}>Character</th>",
         "</tr>",
-        f"<tr><td {hl_season('SUMMER')}>☀️ SUMMER</td><td {hl_season('SUMMER')}>Price > 50MA & 200MA</td><td {hl_season('SUMMER')}>강세장</td></tr>",
-        f"<tr><td {hl_season('AUTUMN')}>🍂 AUTUMN</td><td {hl_season('AUTUMN')}>Price < 50MA but > 200MA</td><td {hl_season('AUTUMN')}>조정기</td></tr>",
-        f"<tr><td {hl_season('WINTER')}>❄️ WINTER</td><td {hl_season('WINTER')}>Price < 50MA & 200MA</td><td {hl_season('WINTER')}>약세장 (-5점)</td></tr>",
-        f"<tr><td {hl_season('SPRING')}>🌱 SPRING</td><td {hl_season('SPRING')}>Price > 50MA but < 200MA</td><td {hl_season('SPRING')}>회복기</td></tr>",
+        f"<tr><td {hl_season('SUMMER')}>☀️ SUMMER</td><td {hl_season('SUMMER')}>Price > 50MA & 200MA</td><td {hl_season('SUMMER')}>Bull Market</td></tr>",
+        f"<tr><td {hl_season('AUTUMN')}>🍂 AUTUMN</td><td {hl_season('AUTUMN')}>Price < 50MA but > 200MA</td><td {hl_season('AUTUMN')}>Correction</td></tr>",
+        f"<tr><td {hl_season('WINTER')}>❄️ WINTER</td><td {hl_season('WINTER')}>Price < 50MA & 200MA</td><td {hl_season('WINTER')}>Bear Market (-5 pts)</td></tr>",
+        f"<tr><td {hl_season('SPRING')}>🌱 SPRING</td><td {hl_season('SPRING')}>Price > 50MA but < 200MA</td><td {hl_season('SPRING')}>Recovery</td></tr>",
         "</table>",
         f"<p>※ QQQ: <b>${data['price']:.2f}</b> (Vol: {data['vol_pct']:.1f}% of 20MA)</p>"
     ]
@@ -899,9 +929,20 @@ def main():
         "<h3>2. Expert Matrix (Mobile Ver.)</h3>",
         "<table style='border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 12px; text-align: center;'>",
         "<tr>",
-        f"<th {th_style}>지표</th><th {th_style}>상태</th>",
+        f"<th {th_style}>Indicator</th><th {th_style}>State</th>",
         f"<th {th_style}>☀️</th><th {th_style}>🍂</th><th {th_style}>❄️</th><th {th_style}>🌱</th>",
         "</tr>",
+        
+        # 0. SKEW (New)
+        f"<tr><td rowspan='4' {td_style}><b>SKEW</b><br><span style='font-size:10px; color:purple;'>Current:{skew_disp}</span></td>",
+        f"<td {td_style}><b>Black Swan</b><br>(&ge;155)</td>",
+        f"<td colspan='4' {hl_score('skew', 'black_swan', 'ALL')}><b style='color:red;'>-15</b></td></tr>",
+        f"<tr><td {td_style}>High Risk<br>(145~155)</td>",
+        f"<td colspan='4' {hl_score('skew', 'high_risk', 'ALL')}>-3</td></tr>",
+        f"<tr><td {td_style}>Normal<br>(115~145)</td>",
+        f"<td colspan='4' {hl_score('skew', 'normal', 'ALL')}>0</td></tr>",
+        f"<tr><td {td_style}>Complacency<br>(&lt;115)</td>",
+        f"<td colspan='4' {hl_score('skew', 'complacency', 'ALL')}>-1</td></tr>",
         
         # 1. VIX Term
         f"<tr><td rowspan='3' {td_style}><b>VIX Term</b><br><span style='font-size:10px; color:blue;'>Ratio:{vix_ratio_disp}</span></td>",
@@ -911,93 +952,93 @@ def main():
         f"<tr><td {td_style}>Normal<br>(0.9~1)</td>",
         f"<td colspan='4' {hl_score('term', 'normal', 'ALL')}>0</td></tr>",
         
-        f"<tr><td {td_style}><b>붕괴</b><br>(&gt;1.0)</td>",
+        f"<tr><td {td_style}><b>Collapse</b><br>(&gt;1.0)</td>",
         f"<td colspan='4' {hl_score('term', 'backwardation', 'ALL')}><b>-10</b></td></tr>",
         
         # 2. Capitulation
-        f"<tr><td {td_style}><b>투매</b></td>",
-        f"<td {td_style}><b>2일연속</b><br>R&gt;1,V&gt;1.5</td>",
+        f"<tr><td {td_style}><b>Capitulation</b></td>",
+        f"<td {td_style}><b>2-Day</b><br>R&gt;1,V&gt;1.5</td>",
         f"<td colspan='4' {hl_score('capitulation', 'detected', 'ALL')}><b style='color:green;'>+15</b></td></tr>",
         
         # 3. VVIX Trap
-        f"<tr><td {td_style}><b>VVIX 함정</b></td>",
-        f"<td {td_style}><b>위험</b><br>VIX↓VVIX↑</td>",
+        f"<tr><td {td_style}><b>VVIX Trap</b></td>",
+        f"<td {td_style}><b>Danger</b><br>VIX↓VVIX↑</td>",
         f"<td colspan='4' {hl_score('vvix_trap', 'detected', 'ALL')}><b style='color:red;'>-10</b></td></tr>",
 
         # 4. RSI(14)
         f"<tr><td rowspan='4' {td_style}>RSI(14)</td>",
-        f"<td {td_style}>과열 (>70)</td>",
+        f"<td {td_style}>Over (>70)</td>",
         f"<td {hl_score('rsi', 'over', 'SUMMER')}>-1</td><td {hl_score('rsi', 'over', 'AUTUMN')}>-3</td><td {hl_score('rsi', 'over', 'WINTER')}><b style='color:red;'>-10</b></td><td {hl_score('rsi', 'over', 'SPRING')}>-2</td></tr>",
         
-        f"<tr><td {td_style}>중립</td>",
+        f"<tr><td {td_style}>Neutral</td>",
         f"<td {hl_score('rsi', 'neutral', 'SUMMER')}>+1</td><td {hl_score('rsi', 'neutral', 'AUTUMN')}>0</td><td {hl_score('rsi', 'neutral', 'WINTER')}>-1</td><td {hl_score('rsi', 'neutral', 'SPRING')}>+1</td></tr>",
         
-        f"<tr><td {td_style}>과매도 (<30)</td>",
+        f"<tr><td {td_style}>Under (<30)</td>",
         f"<td {hl_score('rsi', 'under', 'SUMMER')}>+5</td><td {hl_score('rsi', 'under', 'AUTUMN')}>+4</td><td {hl_score('rsi', 'under', 'WINTER')}>0</td><td {hl_score('rsi', 'under', 'SPRING')}>+4</td></tr>",
         
-        f"<tr><td {td_style}>🚀 탈출</td>",
+        f"<tr><td {td_style}>🚀 Escape</td>",
         f"<td {hl_score('rsi', 'escape', 'SUMMER')}>3~5</td><td {hl_score('rsi', 'escape', 'AUTUMN')}>3~5</td><td {hl_score('rsi', 'escape', 'WINTER')}>3~5</td><td {hl_score('rsi', 'escape', 'SPRING')}>3~5</td></tr>",
         
         # 5. RSI(2)
         f"<tr><td {td_style}><b>RSI(2)</b></td>",
-        f"<td {td_style}><b>눌림목</b><br>(&lt;10)</td>",
+        f"<td {td_style}><b>Dip</b><br>(&lt;10)</td>",
         f"<td colspan='4' {hl_score('rsi2_dip', 'detected', 'ALL')}><b style='color:green;'>+8</b></td></tr>",
 
         # 6. VIX Level
         f"<tr><td rowspan='4' {td_style}>VIX</td>",
-        f"<td {td_style}>안정 (<20)</td>",
+        f"<td {td_style}>Stable (<20)</td>",
         f"<td {hl_score('vix', 'stable', 'SUMMER')}>+2</td><td {hl_score('vix', 'stable', 'AUTUMN')}>0</td><td {hl_score('vix', 'stable', 'WINTER')}>-2</td><td {hl_score('vix', 'stable', 'SPRING')}>+1</td></tr>",
         
-        f"<tr><td {td_style}>공포 (20-35)</td>",
+        f"<tr><td {td_style}>Fear (20-35)</td>",
         f"<td {hl_score('vix', 'fear', 'SUMMER')}>-3</td><td {hl_score('vix', 'fear', 'AUTUMN')}>-4</td><td {hl_score('vix', 'fear', 'WINTER')}>+2</td><td {hl_score('vix', 'fear', 'SPRING')}>-1</td></tr>",
         
-        f"<tr><td {td_style}>패닉 상승</td>",
+        f"<tr><td {td_style}>Panic Rise</td>",
         f"<td {hl_score('vix', 'panic_rise', 'SUMMER')}>-5</td><td {hl_score('vix', 'panic_rise', 'AUTUMN')}>-6</td><td {hl_score('vix', 'panic_rise', 'WINTER')}>-5</td><td {hl_score('vix', 'panic_rise', 'SPRING')}>-4</td></tr>",
         
-        f"<tr><td {td_style}>📉 꺾임</td>",
+        f"<tr><td {td_style}>📉 Peak Out</td>",
         f"<td {hl_score('vix', 'peak_out', 'SUMMER')}>-</td><td {hl_score('vix', 'peak_out', 'AUTUMN')}>-</td><td {hl_score('vix', 'peak_out', 'WINTER')}>+7</td><td {hl_score('vix', 'peak_out', 'SPRING')}>-</td></tr>",
         
         # 7. Bollinger
         f"<tr><td rowspan='5' {td_style}>BB Z-Score<br><span style='font-size:10px; color:blue;'>{z_disp}</span></td>",
-        f"<td {td_style} style='color:red;'><b>과열</b><br>(&gt;1.8)</td>",
+        f"<td {td_style} style='color:red;'><b>Overbought</b><br>(&gt;1.8)</td>",
         f"<td colspan='4' {hl_score('bb', 'overbought_danger', 'ALL')}><b style='color:red;'>-3</b></td></tr>",
         
-        f"<tr><td {td_style}><b>상승</b><br>(0.5~1.8)</td>",
+        f"<tr><td {td_style}><b>Uptrend</b><br>(0.5~1.8)</td>",
         f"<td colspan='4' {hl_score('bb', 'uptrend', 'ALL')}>+1</td></tr>",
         
-        f"<tr><td {td_style}>중립</td>",
+        f"<tr><td {td_style}>Neutral</td>",
         f"<td colspan='4' {hl_score('bb', 'neutral', 'ALL')}>0</td></tr>",
         
-        f"<tr><td {td_style}><b>저평가</b><br>(-1.8~-0.5)</td>",
+        f"<tr><td {td_style}><b>Value</b><br>(-1.8~-0.5)</td>",
         f"<td colspan='4' {hl_score('bb', 'dip_buying', 'ALL')}>+2</td></tr>",
         
-        f"<tr><td {td_style}><b>바닥</b><br>(Z&le;-1.8)</td>",
+        f"<tr><td {td_style}><b>Bottom</b><br>(Z&le;-1.8)</td>",
         f"<td colspan='4' {hl_score('bb', 'oversold_guard', 'ALL')}><b>+1</b></td></tr>",
         
         # 8. Trend & Vol
-        f"<tr><td {td_style}>추세</td><td {td_style}>20일선 위</td>",
+        f"<tr><td {td_style}>Trend</td><td {td_style}>Price > 20MA</td>",
         f"<td {hl_score('trend', 'up', 'SUMMER')}>+2</td><td {hl_score('trend', 'up', 'AUTUMN')}>+2</td><td {hl_score('trend', 'up', 'WINTER')}>+3</td><td {hl_score('trend', 'up', 'SPRING')}>+3</td></tr>",
         
-        f"<tr><td {td_style}>거래량</td><td {td_style}>폭증</td>",
+        f"<tr><td {td_style}>Volume</td><td {td_style}>Explode</td>",
         f"<td {hl_score('vol', 'explode', 'SUMMER')}>+2</td><td {hl_score('vol', 'explode', 'AUTUMN')}>+3</td><td {hl_score('vol', 'explode', 'WINTER')}>+3</td><td {hl_score('vol', 'explode', 'SPRING')}>+2</td></tr>",
         
         # 9. MACD (4-Zone)
         f"<tr><td rowspan='4' {td_style}>MACD</td>",
         
         # Case 1
-        f"<td {td_style}>📈 <b>가속</b><br><span style='font-size:10px;'>(위+골든)</span></td>",
+        f"<td {td_style}>📈 <b>Accel</b><br><span style='font-size:10px;'>(Up+Gold)</span></td>",
         f"<td colspan='4' {hl_score('macd', 'zero_up_golden', 'ALL')}><b style='color:green;'>+3</b></td></tr>",
         
         # Case 2
-        f"<td {td_style}>📉 <b>조정</b><br><span style='font-size:10px;'>(위+데드)</span></td>",
+        f"<td {td_style}>📉 <b>Corr</b><br><span style='font-size:10px;'>(Up+Dead)</span></td>",
         f"<td colspan='4' {hl_score('macd', 'zero_up_dead', 'ALL')}><b style='color:orange;'>-3</b></td></tr>",
         
         # Case 3
-        f"<td {td_style}>🎣 <b>함정</b><br><span style='font-size:10px;'>(아래+골든)</span></td>",
+        f"<td {td_style}>🎣 <b>Trap</b><br><span style='font-size:10px;'>(Down+Gold)</span></td>",
         f"<td colspan='4' {hl_score('macd', 'zero_down_golden', 'ALL')}><b style='color:gray;'>0</b></td></tr>",
         
         # Case 4
-        f"<td {td_style}>☔ <b>폭락</b><br><span style='font-size:10px;'>(아래+데드)</span></td>",
+        f"<td {td_style}>☔ <b>Crash</b><br><span style='font-size:10px;'>(Down+Dead)</span></td>",
         f"<td colspan='4' {hl_score('macd', 'zero_down_dead', 'ALL')}><b style='color:red;'>-5</b></td></tr>",
         
         "</table>"
@@ -1013,40 +1054,40 @@ def main():
             
     strat_display = f"""
     <div style='background-color:#f1f8e9; padding:15px; border-left:5px solid #4caf50; margin-bottom:15px;'>
-        <div style='font-size:18px; font-weight:bold; color:#2e7d32;'>🔔 추천 전략: {strat_type if strat_type else '-'}</div>
-        <div style='font-size:14px; color:#555; margin-top:5px;'>💡 <b>선택 근거:</b> {strat_basis if strat_basis else '-'}</div>
+        <div style='font-size:18px; font-weight:bold; color:#2e7d32;'>🔔 Recommended Strategy: {strat_type if strat_type else '-'}</div>
+        <div style='font-size:14px; color:#555; margin-top:5px;'>💡 <b>Basis:</b> {strat_basis if strat_basis else '-'}</div>
     </div>
     """
 
     html_verdict_list = [
-        f"<h3>3. Final Verdict: <span style='color:white;'>{score}점</span> - Dynamic Exit Matrix</h3>",
+        f"<h3>3. Final Verdict: <span style='color:white;'>{score} Pts</span> - Dynamic Exit Matrix</h3>",
         strat_display,
         "<div style='border: 2px solid #ccc; border-radius: 10px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1);'>",
         "<table style='border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; text-align: center;'>",
         f"<tr style='background-color: #333; color: white;'>",
-        f"<th {th_style} style='color:white;'>점수 구간</th>",
-        f"<th {th_style} style='color:white;'>최종 판정</th>",
-        f"<th {th_style} style='color:white;'>🎯 익절 목표</th>",
-        f"<th {th_style} style='color:white;'>🛑 손절 라인</th>",
+        f"<th {th_style} style='color:white;'>Score Range</th>",
+        f"<th {th_style} style='color:white;'>Verdict</th>",
+        f"<th {th_style} style='color:white;'>🎯 Target</th>",
+        f"<th {th_style} style='color:white;'>🛑 Stop Loss</th>",
         "</tr>",
         
         f"<tr {get_matrix_style(matrix_id, 'panic', '#ffebee')}>",
-        "<td>VIX 급등 / 구조 붕괴 / VVIX Trap</td><td>⛔ 매매 중단 (System Collapse)</td><td>-</td><td>-</td></tr>",
+        "<td>System Collapse / Black Swan</td><td>⛔ Trading Halted (Panic)</td><td>-</td><td>-</td></tr>",
         
         f"<tr {get_matrix_style(matrix_id, 'super_strong', '#c8e6c9')}>",
-        "<td>20점 이상 (투매 신호 포함)</td><td>💎💎 극강 추세 (Super Strong)</td><td style='color:green;'>+100%</td><td style='color:red;'>-300% (원금 4배)</td></tr>",
+        "<td>20+ (with Signals)</td><td>💎💎 Super Strong</td><td style='color:green;'>+100%</td><td style='color:red;'>-300%</td></tr>",
         
         f"<tr {get_matrix_style(matrix_id, 'strong', '#dff0d8')}>",
-        "<td>12 ~ 19점</td><td>💎 추세 추종 (Strong)</td><td style='color:green;'>+75%</td><td style='color:red;'>-300% (원금 4배)</td></tr>",
+        "<td>12 ~ 19</td><td>💎 Strong</td><td style='color:green;'>+75%</td><td style='color:red;'>-300%</td></tr>",
         
         f"<tr {get_matrix_style(matrix_id, 'standard', '#ffffff')}>",
-        "<td>8 ~ 11점</td><td>✅ 표준 대응 (Standard)</td><td style='color:green;'>+50%</td><td style='color:red;'>-200% (원금 3배)</td></tr>",
+        "<td>8 ~ 11</td><td>✅ Standard</td><td style='color:green;'>+50%</td><td style='color:red;'>-200%</td></tr>",
         
         f"<tr {get_matrix_style(matrix_id, 'weak', '#fff9c4')}>",
-        "<td>5 ~ 7점</td><td>⚠️ 속전 속결 (Hit & Run)</td><td style='color:green;'>+30%</td><td style='color:red;'>-150% (원금 2.5배)</td></tr>",
+        "<td>5 ~ 7</td><td>⚠️ Hit & Run</td><td style='color:green;'>+30%</td><td style='color:red;'>-150%</td></tr>",
         
         f"<tr {get_matrix_style(matrix_id, 'no_entry', '#f2dede')}>",
-        "<td>5점 미만</td><td>🛡️ 진입 보류 (No Entry)</td><td>-</td><td>-</td></tr>",
+        "<td>< 5</td><td>🛡️ No Entry</td><td>-</td><td>-</td></tr>",
         
         "</table>",
         "</div>"
@@ -1054,7 +1095,7 @@ def main():
     st.markdown("".join(html_verdict_list), unsafe_allow_html=True)
 
     st.markdown("---")
-    st.subheader("📈 기술적 분석 차트")
+    st.subheader("📈 Technical Charts")
     st.pyplot(create_charts(data))
 
 if __name__ == "__main__":
