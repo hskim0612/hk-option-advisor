@@ -56,14 +56,15 @@ def fetch_ticker_data(ticker, period="2y"):
 
 @st.cache_data(ttl=1800)
 def get_market_data():
-    # [Optimization] Fetch all tickers including SKEW in parallel
+    # [Optimization] Fetch all tickers including HYG/IEI in parallel
     tickers_to_fetch = [
         ("QQQ", "2y"), ("^ADD", "2y"), ("^VIX", "1y"), 
-        ("^VVIX", "1y"), ("^SKEW", "1y"), ("^VIX3M", "1y")
+        ("^VVIX", "1y"), ("^SKEW", "1y"), ("^VIX3M", "1y"),
+        ("HYG", "2y"), ("IEI", "2y") # [NEW] Added HYG and IEI
     ]
     
     results = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
         future_to_ticker = {executor.submit(fetch_ticker_data, t, p): t for t, p in tickers_to_fetch}
         for future in concurrent.futures.as_completed(future_to_ticker):
             ticker, t_obj, hist = future.result()
@@ -123,15 +124,37 @@ def get_market_data():
         hist['ADL'] = hist['Net_Issues'].cumsum() * 100
         hist['ADL_MA20'] = hist['ADL'].rolling(window=20).mean()
     
-    # [NEW] ADL Bollinger Bands Logic
+    # ADL Bollinger Bands Logic
     hist['ADL_Std'] = hist['ADL'].rolling(window=20).std()
     hist['ADL_Upper'] = hist['ADL_MA20'] + (hist['ADL_Std'] * 2)
     hist['ADL_Lower'] = hist['ADL_MA20'] - (hist['ADL_Std'] * 2)
     
-    # ADL Z-Score (Avoid division by zero)
+    # ADL Z-Score
     numerator = hist['ADL'] - hist['ADL_MA20']
     denominator = hist['ADL_Std']
     hist['ADL_Z'] = np.where(denominator == 0, 0, numerator / denominator)
+
+    # [NEW] Process HYG & IEI Data
+    hyg_hist = results["HYG"]['hist'].copy()
+    iei_hist = results["IEI"]['hist'].copy()
+    hyg_iei_ratio = pd.DataFrame()
+
+    if not hyg_hist.empty:
+        hyg_hist.index = hyg_hist.index.tz_localize(None).normalize()
+        # HYG Moving Averages
+        hyg_hist['MA20'] = hyg_hist['Close'].rolling(window=20).mean()
+        hyg_hist['MA50'] = hyg_hist['Close'].rolling(window=50).mean()
+        hyg_hist['MA200'] = hyg_hist['Close'].rolling(window=200).mean()
+    
+    if not iei_hist.empty:
+        iei_hist.index = iei_hist.index.tz_localize(None).normalize()
+
+    # Calculate HYG/IEI Ratio
+    if not hyg_hist.empty and not iei_hist.empty:
+        # Inner join on index to align dates
+        combined = pd.merge(hyg_hist[['Close']], iei_hist[['Close']], left_index=True, right_index=True, suffixes=('_HYG', '_IEI'))
+        combined['Ratio'] = combined['Close_HYG'] / combined['Close_IEI']
+        hyg_iei_ratio = combined
 
     # 2. Process VIX, VIX3M, VVIX, SKEW
     vix_hist = results["^VIX"]['hist']
@@ -206,10 +229,12 @@ def get_market_data():
         'vix': curr_vix, 'vix_prev': prev_vix,
         'vix3m': vix3m_val,
         'iv': current_iv,
-        'adl_z': hist['ADL_Z'].iloc[-1], # [NEW] Pass ADL Z-Score
+        'adl_z': hist['ADL_Z'].iloc[-1],
         'hist': hist, 'vix_hist': vix_hist, 'vix3m_hist': vix3m_hist, 'vvix_hist': vvix_hist,
         'skew_hist': skew_hist,
-        'vix_term_df': vix_term_df
+        'vix_term_df': vix_term_df,
+        'hyg_hist': hyg_hist,          # [NEW] Return HYG
+        'hyg_iei_ratio': hyg_iei_ratio # [NEW] Return Ratio
     }
 
 # === [2] Advanced Logic Functions ===
@@ -434,11 +459,7 @@ def analyze_expert_logic(d):
             score += pts
             log['macd'] = 'zero_down_dead'
 
-    # 8. [MODIFIED] SKEW Logic (Black Swan Filter)
-    # 155 이상: -15점 (강제 매매 중단급 페널티)
-    # 145~155: -3점 (고위험 감점)
-    # 115~145: 0점 (정상)
-    # 115 미만: -1점 (안일함)
+    # 8. SKEW Logic (Black Swan Filter)
     if d['skew_hist'] is not None and not d['skew_hist'].empty:
         curr_skew = d['skew_hist']['Close'].iloc[-1]
         log['curr_skew'] = curr_skew
@@ -477,7 +498,6 @@ def determine_action(score, season, data, log):
     current_vix = data['vix']
     
     # 1. Panic Check (Kill Switch)
-    # [NEW] SKEW Black Swan Check
     if log.get('skew') == 'black_swan':
         return None, f"⛔ Trading Halted (Black Swan Risk: {log.get('curr_skew'):.1f})", "-", "-", "panic", "-", "-"
         
@@ -627,22 +647,30 @@ def create_charts(data):
         'SUMMER': '#FFEBEE', 'AUTUMN': '#FFF3E0', 'WINTER': '#E3F2FD', 'SPRING': '#E8F5E9'
     }
     
-    # [UPDATE] Figure Size Increased and Grid Expanded to 12 rows
-    fig = plt.figure(figsize=(10, 36))
-    gs = fig.add_gridspec(12, 1, height_ratios=[2, 0.6, 1.5, 1, 1, 1, 1, 1, 1, 1, 1, 1.5])
+    # [UPDATE] Figure Size Increased for new plots (HYG, HYG/IEI)
+    # Total rows: 14
+    fig = plt.figure(figsize=(10, 42))
+    
+    # [NEW] Inserted HYG and Ratio charts after Trend chart
+    gs = fig.add_gridspec(14, 1, height_ratios=[2, 0.6, 1.5, 1.2, 1.2, 1, 1, 1, 1, 1, 1, 1, 1.5, 1.5])
     
     ax1 = fig.add_subplot(gs[0])
     ax_vol = fig.add_subplot(gs[1], sharex=ax1)
     ax_trend = fig.add_subplot(gs[2], sharex=ax1)
-    ax_skew = fig.add_subplot(gs[3], sharex=ax1) 
-    ax_vix_abs = fig.add_subplot(gs[4], sharex=ax1)
-    ax_ratio = fig.add_subplot(gs[5], sharex=ax1)
-    ax_rsi = fig.add_subplot(gs[6], sharex=ax1)
-    ax2 = fig.add_subplot(gs[7], sharex=ax1)
-    ax_ratio_vvix = fig.add_subplot(gs[8], sharex=ax1)
-    ax_rsi2 = fig.add_subplot(gs[9], sharex=ax1)
-    ax_adl = fig.add_subplot(gs[10], sharex=ax1)
-    ax_adl_band = fig.add_subplot(gs[11], sharex=ax1) # [NEW]
+    
+    # [NEW Axes]
+    ax_hyg = fig.add_subplot(gs[3], sharex=ax1)
+    ax_hyg_ratio = fig.add_subplot(gs[4], sharex=ax1)
+    
+    ax_skew = fig.add_subplot(gs[5], sharex=ax1) 
+    ax_vix_abs = fig.add_subplot(gs[6], sharex=ax1)
+    ax_ratio = fig.add_subplot(gs[7], sharex=ax1)
+    ax_rsi = fig.add_subplot(gs[8], sharex=ax1)
+    ax2 = fig.add_subplot(gs[9], sharex=ax1)
+    ax_ratio_vvix = fig.add_subplot(gs[10], sharex=ax1)
+    ax_rsi2 = fig.add_subplot(gs[11], sharex=ax1)
+    ax_adl = fig.add_subplot(gs[12], sharex=ax1)
+    ax_adl_band = fig.add_subplot(gs[13], sharex=ax1)
 
     # 1. Price Chart
     ax1.plot(hist.index, hist['Close'], label='QQQ', color='black', alpha=0.9, zorder=2)
@@ -680,7 +708,53 @@ def create_charts(data):
     ax_trend.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_trend.get_xticklabels(), visible=False)
 
-    # 4. SKEW Index Chart (Modified Visual)
+    # === [NEW] 4. HYG Price & MAs ===
+    if 'hyg_hist' in data and not data['hyg_hist'].empty:
+        hyg = data['hyg_hist']
+        ax_hyg.plot(hyg.index, hyg['Close'], label='HYG (Junk Bond)', color='black', alpha=0.9, zorder=2)
+        ax_hyg.plot(hyg.index, hyg['MA20'], label='20MA', color='green', ls='--', lw=1, zorder=2)
+        ax_hyg.plot(hyg.index, hyg['MA200'], label='200MA', color='red', ls='-', lw=2, zorder=2)
+        
+        # Check for Bearish Divergence (Simple visual aid)
+        curr_price = hyg['Close'].iloc[-1]
+        ma200_val = hyg['MA200'].iloc[-1]
+        status = "HEALTHY" if curr_price > ma200_val else "DANGER (Below 200MA)"
+        color_status = "green" if curr_price > ma200_val else "red"
+        
+        ax_hyg.text(hyg.index[-1], curr_price, f" {status}", color=color_status, fontweight='bold', va='center')
+        ax_hyg.legend(loc='upper left', fontsize=9)
+    else:
+        ax_hyg.text(0.5, 0.5, "HYG Data Unavailable", transform=ax_hyg.transAxes, ha='center')
+
+    ax_hyg.set_title('HYG (Canary in Coal Mine) - Watch 200MA Break', fontsize=12, fontweight='bold', color='#D35400')
+    ax_hyg.grid(True, alpha=0.3, zorder=1)
+    plt.setp(ax_hyg.get_xticklabels(), visible=False)
+
+    # === [NEW] 5. HYG / IEI Ratio ===
+    if 'hyg_iei_ratio' in data and not data['hyg_iei_ratio'].empty:
+        ratio_df = data['hyg_iei_ratio']
+        ax_hyg_ratio.plot(ratio_df.index, ratio_df['Ratio'], label='HYG/IEI Ratio', color='#8E44AD', lw=1.5, zorder=2)
+        
+        # Add simple MA for trend
+        ratio_ma20 = ratio_df['Ratio'].rolling(20).mean()
+        ax_hyg_ratio.plot(ratio_df.index, ratio_ma20, label='Ratio 20MA', color='orange', ls='--', lw=1, zorder=2)
+        
+        curr_ratio = ratio_df['Ratio'].iloc[-1]
+        prev_ratio = ratio_df['Ratio'].iloc[-2]
+        
+        # Arrow logic
+        arrow = "↗️" if curr_ratio > prev_ratio else "↘️"
+        ax_hyg_ratio.text(ratio_df.index[-1], curr_ratio, f" {curr_ratio:.3f} {arrow}", color='purple', fontweight='bold')
+        
+        ax_hyg_ratio.legend(loc='upper left', fontsize=9)
+    else:
+        ax_hyg_ratio.text(0.5, 0.5, "Ratio Data Unavailable", transform=ax_hyg_ratio.transAxes, ha='center')
+
+    ax_hyg_ratio.set_title('HYG / IEI Ratio (Risk Appetite: Rising=Risk On, Falling=Risk Off)', fontsize=12, fontweight='bold', color='#8E44AD')
+    ax_hyg_ratio.grid(True, alpha=0.3, zorder=1)
+    plt.setp(ax_hyg_ratio.get_xticklabels(), visible=False)
+
+    # 6. SKEW Index Chart (Modified Visual)
     if 'skew_hist' in data and not data['skew_hist'].empty:
         skew_data = data['skew_hist']
         skew_data.index = skew_data.index.tz_localize(None).normalize()
@@ -703,7 +777,7 @@ def create_charts(data):
     ax_skew.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_skew.get_xticklabels(), visible=False)
 
-    # 5. VIX Absolute
+    # 7. VIX Absolute
     ax_vix_abs.plot(data['vix_hist'].index, data['vix_hist']['Close'], color='purple', label='VIX (Spot)', zorder=2)
     if data['vix3m_hist'] is not None and not data['vix3m_hist'].empty:
           ax_vix_abs.plot(data['vix3m_hist'].index, data['vix3m_hist']['Close'], color='gray', ls=':', label='VIX3M', zorder=2)
@@ -715,7 +789,7 @@ def create_charts(data):
     ax_vix_abs.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_vix_abs.get_xticklabels(), visible=False)
 
-    # 6. VIX Term Structure
+    # 8. VIX Term Structure
     term_data = data.get('vix_term_df')
     if term_data is not None and not term_data.empty:
         ax_ratio.plot(term_data.index, term_data['Ratio'], color='black', lw=1.2, label='Ratio (VIX/VIX3M)', zorder=2)
@@ -733,7 +807,7 @@ def create_charts(data):
     ax_ratio.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_ratio.get_xticklabels(), visible=False)
 
-    # 7. RSI(14)
+    # 9. RSI(14)
     ax_rsi.plot(hist.index, hist['RSI'], color='purple', label='RSI(14)', zorder=2)
     ax_rsi.axhline(70, color='red', ls='--', alpha=0.7, zorder=2)
     ax_rsi.axhline(30, color='green', ls='--', alpha=0.7, zorder=2)
@@ -744,7 +818,7 @@ def create_charts(data):
     ax_rsi.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_rsi.get_xticklabels(), visible=False)
 
-    # 8. MACD
+    # 10. MACD
     ax2.plot(hist.index, hist['MACD'], label='MACD', color='blue', zorder=2)
     ax2.plot(hist.index, hist['Signal'], label='Signal', color='orange', zorder=2)
     ax2.bar(hist.index, hist['MACD']-hist['Signal'], color='gray', alpha=0.3, zorder=2)
@@ -753,7 +827,7 @@ def create_charts(data):
     ax2.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax2.get_xticklabels(), visible=False)
     
-    # 9. VVIX / VIX Ratio
+    # 11. VVIX / VIX Ratio
     try:
         df_v = data['vix_hist'][['Close']].copy()
         df_vv = data['vvix_hist'][['Close']].copy()
@@ -781,7 +855,7 @@ def create_charts(data):
     ax_ratio_vvix.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_ratio_vvix.get_xticklabels(), visible=False)
 
-    # 10. RSI(2)
+    # 12. RSI(2)
     ax_rsi2.plot(hist.index, hist['RSI_2'], color='gray', label='RSI(2)', linewidth=1.2, zorder=2)
     ax_rsi2.axhline(10, color='green', linestyle='--', alpha=0.7, zorder=2)
     ax_rsi2.axhline(90, color='red', linestyle='--', alpha=0.7, zorder=2)
@@ -793,7 +867,7 @@ def create_charts(data):
     ax_rsi2.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_rsi2.get_xticklabels(), visible=False)
 
-    # 11. ADL (Raw)
+    # 13. ADL (Raw)
     ax_adl.plot(hist.index, hist['ADL'], color='black', label='ADL', linewidth=1.5, zorder=2)
     ax_adl.plot(hist.index, hist['ADL_MA20'], color='orange', ls='--', label='ADL 20MA', linewidth=1, zorder=2)
     
@@ -809,7 +883,7 @@ def create_charts(data):
     ax_adl.set_xlabel('Date', fontsize=10)
     plt.setp(ax_adl.get_xticklabels(), visible=False) # Hide X labels to match others
 
-    # 12. [NEW] ADL Bollinger Band
+    # 14. ADL Bollinger Band
     if 'ADL_Upper' in hist.columns:
         ax_adl_band.plot(hist.index, hist['ADL'], color='black', lw=1.5, zorder=3, label='ADL')
         ax_adl_band.plot(hist.index, hist['ADL_Upper'], color='red', ls='--', lw=1, zorder=2, label='Upper')
@@ -828,7 +902,8 @@ def create_charts(data):
     ax_adl_band.set_xlabel('Date')
 
     # === [Background Coloring] ===
-    all_axes_except_trend = [ax1, ax_vol, ax_skew, ax_vix_abs, ax_ratio, ax_rsi, ax2, ax_ratio_vvix, ax_rsi2, ax_adl, ax_adl_band]
+    # Updated list to include new axes
+    all_axes_except_trend = [ax1, ax_vol, ax_hyg, ax_hyg_ratio, ax_skew, ax_vix_abs, ax_ratio, ax_rsi, ax2, ax_ratio_vvix, ax_rsi2, ax_adl, ax_adl_band]
     
     for ax in all_axes_except_trend:
         trans = ax.get_xaxis_transform()
