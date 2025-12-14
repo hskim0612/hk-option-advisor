@@ -13,7 +13,7 @@ APP_PASSWORD = "1979"
 
 # === [Page Configuration] ===
 st.set_page_config(
-    page_title="HK Options Advisory (Grand Master v23.0 - SKEW Logic)",
+    page_title="HK Options Advisory (Grand Master v23.1 - Forest Logic)",
     page_icon="🦅",
     layout="wide"
 )
@@ -60,7 +60,7 @@ def get_market_data():
     tickers_to_fetch = [
         ("QQQ", "2y"), ("^ADD", "2y"), ("^VIX", "1y"), 
         ("^VVIX", "1y"), ("^SKEW", "1y"), ("^VIX3M", "1y"),
-        ("HYG", "2y"), ("IEI", "2y") # [NEW] Added HYG and IEI
+        ("HYG", "2y"), ("IEI", "2y")
     ]
     
     results = {}
@@ -139,21 +139,15 @@ def get_market_data():
     iei_hist = results["IEI"]['hist'].copy()
     hyg_iei_ratio = pd.DataFrame()
 
-    if not hyg_hist.empty:
-        hyg_hist.index = hyg_hist.index.tz_localize(None).normalize()
-        # HYG Moving Averages
-        hyg_hist['MA20'] = hyg_hist['Close'].rolling(window=20).mean()
-        hyg_hist['MA50'] = hyg_hist['Close'].rolling(window=50).mean()
-        hyg_hist['MA200'] = hyg_hist['Close'].rolling(window=200).mean()
-    
-    if not iei_hist.empty:
-        iei_hist.index = iei_hist.index.tz_localize(None).normalize()
-
-    # Calculate HYG/IEI Ratio
     if not hyg_hist.empty and not iei_hist.empty:
+        hyg_hist.index = hyg_hist.index.tz_localize(None).normalize()
+        iei_hist.index = iei_hist.index.tz_localize(None).normalize()
+        
         # Inner join on index to align dates
         combined = pd.merge(hyg_hist[['Close']], iei_hist[['Close']], left_index=True, right_index=True, suffixes=('_HYG', '_IEI'))
         combined['Ratio'] = combined['Close_HYG'] / combined['Close_IEI']
+        # [MODIFIED] 18MA for Ratio
+        combined['Ratio_MA18'] = combined['Ratio'].rolling(window=18).mean()
         hyg_iei_ratio = combined
 
     # 2. Process VIX, VIX3M, VVIX, SKEW
@@ -233,8 +227,7 @@ def get_market_data():
         'hist': hist, 'vix_hist': vix_hist, 'vix3m_hist': vix3m_hist, 'vvix_hist': vvix_hist,
         'skew_hist': skew_hist,
         'vix_term_df': vix_term_df,
-        'hyg_hist': hyg_hist,          # [NEW] Return HYG
-        'hyg_iei_ratio': hyg_iei_ratio # [NEW] Return Ratio
+        'hyg_iei_ratio': hyg_iei_ratio
     }
 
 # === [2] Advanced Logic Functions ===
@@ -288,23 +281,42 @@ def detect_vvix_trap(data, log):
     log['vvix_trap'] = 'none'
     return 0
 
-def detect_rsi2_dip(data, log):
-    try:
-        rsi2 = data['rsi2']
-        ratio = data['vix'] / data['vix3m'] if data['vix3m'] else 1.1
+# [NEW] Logic for "Forest & Tree" (ADL Z + RSI2)
+def analyze_adl_rsi2_strategy(data, log):
+    adl_z = data['adl_z']
+    rsi2 = data['rsi2']
+    pts = 0
+    state = 'neutral'
+    
+    # 1. Negative ADL Z Penalty (Explicit Request)
+    if adl_z < 0:
+        pts += -5
+        log['adl_neg_penalty'] = True
+    else:
+        log['adl_neg_penalty'] = False
         
-        vvix_hist = data['vvix_hist']['Close']
-        if len(vvix_hist) < 2: return 0
-        vvix_falling = vvix_hist.iloc[-1] < vvix_hist.iloc[-2]
-        
-        if rsi2 < 10 and ratio < 1.0 and vvix_falling:
-            log['rsi2_dip'] = 'detected'
-            return 8
-    except:
-        pass
-
-    log['rsi2_dip'] = 'none'
-    return 0
+    # 2. Forest & Tree Strategy
+    strategy_pts = 0
+    
+    if adl_z >= 0.9: # Forest is growing
+        if rsi2 < 10: 
+            strategy_pts = 5
+            state = 'strong_buy'
+        elif rsi2 < 20: 
+            strategy_pts = 2
+            state = 'buy'
+            
+    elif adl_z < 0: # Forest is dying
+        if rsi2 > 90:
+            strategy_pts = -5
+            state = 'strong_sell'
+        elif rsi2 > 80:
+            strategy_pts = -2
+            state = 'sell'
+            
+    log['forest_tree_state'] = state
+    
+    return pts + strategy_pts
 
 # === [3] Expert Logic (MACD 4-Zone + SKEW) ===
 def analyze_expert_logic(d):
@@ -487,8 +499,9 @@ def analyze_expert_logic(d):
     pts_vvix = detect_vvix_trap(d, log)
     score += pts_vvix
     
-    pts_rsi2 = detect_rsi2_dip(d, log)
-    score += pts_rsi2
+    # [NEW] Replaced simple RSI2 Dip with "Forest & Tree" logic
+    pts_forest = analyze_adl_rsi2_strategy(d, log)
+    score += pts_forest
 
     return season, score, log
 
@@ -634,7 +647,7 @@ def find_best_option(price, iv, target_delta, strategy_type):
 def create_charts(data):
     hist = data['hist'].copy()
     
-    # 4 Seasons
+    # 4 Seasons Logic
     cond_summer = (hist['Close'] > hist['MA50']) & (hist['Close'] > hist['MA200'])
     cond_autumn = (hist['Close'] < hist['MA50']) & (hist['Close'] > hist['MA200'])
     cond_winter = (hist['Close'] < hist['MA50']) & (hist['Close'] < hist['MA200'])
@@ -643,34 +656,33 @@ def create_charts(data):
     choices = ['SUMMER', 'AUTUMN', 'WINTER']
     hist['Season'] = np.select(conditions, choices, default='SPRING')
     
+    # [UPDATE] Colors: More Saturated Spring/Autumn, Distinct Winter
     season_colors = {
-        'SUMMER': '#FFEBEE', 'AUTUMN': '#FFF3E0', 'WINTER': '#E3F2FD', 'SPRING': '#E8F5E9'
+        'SUMMER': '#FFEBEE',           # Pale Red (Original)
+        'AUTUMN': '#FFCCBC',           # Saturated Orange (Deep Orange 100)
+        'WINTER': '#BBDEFB',           # Distinct Blue (Blue 100) - Different from Spring
+        'SPRING': '#C8E6C9'            # Saturated Green (Green 100)
     }
     
-    # [UPDATE] Figure Size Increased for new plots (HYG, HYG/IEI)
-    # Total rows: 14
-    fig = plt.figure(figsize=(10, 42))
+    # [UPDATE] Removed HYG Price and ADL Raw -> 12 Rows
+    fig = plt.figure(figsize=(10, 36))
     
-    # [NEW] Inserted HYG and Ratio charts after Trend chart
-    gs = fig.add_gridspec(14, 1, height_ratios=[2, 0.6, 1.5, 1.2, 1.2, 1, 1, 1, 1, 1, 1, 1, 1.5, 1.5])
+    gs = fig.add_gridspec(12, 1, height_ratios=[2, 0.6, 1.5, 1.2, 1, 1, 1, 1, 1, 1, 1, 1.5])
     
     ax1 = fig.add_subplot(gs[0])
     ax_vol = fig.add_subplot(gs[1], sharex=ax1)
     ax_trend = fig.add_subplot(gs[2], sharex=ax1)
     
-    # [NEW Axes]
-    ax_hyg = fig.add_subplot(gs[3], sharex=ax1)
-    ax_hyg_ratio = fig.add_subplot(gs[4], sharex=ax1)
+    ax_hyg_ratio = fig.add_subplot(gs[3], sharex=ax1) # HYG Price removed
     
-    ax_skew = fig.add_subplot(gs[5], sharex=ax1) 
-    ax_vix_abs = fig.add_subplot(gs[6], sharex=ax1)
-    ax_ratio = fig.add_subplot(gs[7], sharex=ax1)
-    ax_rsi = fig.add_subplot(gs[8], sharex=ax1)
-    ax2 = fig.add_subplot(gs[9], sharex=ax1)
-    ax_ratio_vvix = fig.add_subplot(gs[10], sharex=ax1)
-    ax_rsi2 = fig.add_subplot(gs[11], sharex=ax1)
-    ax_adl = fig.add_subplot(gs[12], sharex=ax1)
-    ax_adl_band = fig.add_subplot(gs[13], sharex=ax1)
+    ax_skew = fig.add_subplot(gs[4], sharex=ax1) 
+    ax_vix_abs = fig.add_subplot(gs[5], sharex=ax1)
+    ax_ratio = fig.add_subplot(gs[6], sharex=ax1)
+    ax_rsi = fig.add_subplot(gs[7], sharex=ax1)
+    ax2 = fig.add_subplot(gs[8], sharex=ax1)
+    ax_ratio_vvix = fig.add_subplot(gs[9], sharex=ax1)
+    ax_rsi2 = fig.add_subplot(gs[10], sharex=ax1)
+    ax_adl_band = fig.add_subplot(gs[11], sharex=ax1) # ADL Raw removed
 
     # 1. Price Chart
     ax1.plot(hist.index, hist['Close'], label='QQQ', color='black', alpha=0.9, zorder=2)
@@ -691,58 +703,50 @@ def create_charts(data):
     ax_vol.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_vol.get_xticklabels(), visible=False)
     
-    # 3. Trend Graph
-    ax_trend.plot(hist.index, hist['Close'], label='QQQ', color='black', alpha=0.8, zorder=2)
+    # 3. Trend Graph (Modified: Season Background + Markers)
+    ax_trend.plot(hist.index, hist['Close'], label='QQQ', color='black', alpha=0.5, zorder=1)
     ax_trend.plot(hist.index, hist['MA20'], label='20MA', color='green', ls='--', lw=1, zorder=2)
     ax_trend.plot(hist.index, hist['MA50'], label='50MA', color='blue', ls='-', lw=1, zorder=2)
     
-    dead_cross_mask = hist['MACD'] < hist['Signal']
-    ax_trend.fill_between(hist.index, ax_trend.get_ylim()[0], ax_trend.get_ylim()[1], 
-                          where=dead_cross_mask, color='#FFCDD2', alpha=0.4, 
-                          transform=ax_trend.get_xaxis_transform(), zorder=0, label='MACD < Signal (Dead)')
+    # Detect Golden/Dead Cross on MACD for markers
+    macd = hist['MACD']
+    sig = hist['Signal']
+    
+    # Golden Cross: MACD crosses above Signal
+    golden_cross = (macd > sig) & (macd.shift(1) < sig.shift(1))
+    # Dead Cross: MACD crosses below Signal
+    dead_cross = (macd < sig) & (macd.shift(1) > sig.shift(1))
+    
+    ax_trend.scatter(hist.index[golden_cross], hist['Close'][golden_cross], marker='^', color='green', s=100, label='MACD Golden', zorder=5)
+    ax_trend.scatter(hist.index[dead_cross], hist['Close'][dead_cross], marker='v', color='red', s=100, label='MACD Dead', zorder=5)
 
-    handles, labels = ax_trend.get_legend_handles_labels()
-    by_label = dict(zip(labels, handles))
-    ax_trend.legend(by_label.values(), by_label.keys(), loc='upper left')
-    ax_trend.set_title('QQQ Trend Check (Background: MACD Dead Cross)', fontsize=10, fontweight='bold')
+    ax_trend.legend(loc='upper left')
+    ax_trend.set_title('QQQ Trend Check (Markers: MACD Crosses)', fontsize=10, fontweight='bold')
     ax_trend.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_trend.get_xticklabels(), visible=False)
 
-    # === [NEW] 4. HYG Price & MAs ===
-    if 'hyg_hist' in data and not data['hyg_hist'].empty:
-        hyg = data['hyg_hist']
-        ax_hyg.plot(hyg.index, hyg['Close'], label='HYG (Junk Bond)', color='black', alpha=0.9, zorder=2)
-        ax_hyg.plot(hyg.index, hyg['MA20'], label='20MA', color='green', ls='--', lw=1, zorder=2)
-        ax_hyg.plot(hyg.index, hyg['MA200'], label='200MA', color='red', ls='-', lw=2, zorder=2)
-        
-        # Check for Bearish Divergence (Simple visual aid)
-        curr_price = hyg['Close'].iloc[-1]
-        ma200_val = hyg['MA200'].iloc[-1]
-        status = "HEALTHY" if curr_price > ma200_val else "DANGER (Below 200MA)"
-        color_status = "green" if curr_price > ma200_val else "red"
-        
-        ax_hyg.text(hyg.index[-1], curr_price, f" {status}", color=color_status, fontweight='bold', va='center')
-        ax_hyg.legend(loc='upper left', fontsize=9)
-    else:
-        ax_hyg.text(0.5, 0.5, "HYG Data Unavailable", transform=ax_hyg.transAxes, ha='center')
-
-    ax_hyg.set_title('HYG (Canary in Coal Mine) - Watch 200MA Break', fontsize=12, fontweight='bold', color='#D35400')
-    ax_hyg.grid(True, alpha=0.3, zorder=1)
-    plt.setp(ax_hyg.get_xticklabels(), visible=False)
-
-    # === [NEW] 5. HYG / IEI Ratio ===
+    # 4. HYG / IEI Ratio (Modified: 18MA + Cross Markers)
     if 'hyg_iei_ratio' in data and not data['hyg_iei_ratio'].empty:
         ratio_df = data['hyg_iei_ratio']
         ax_hyg_ratio.plot(ratio_df.index, ratio_df['Ratio'], label='HYG/IEI Ratio', color='#8E44AD', lw=1.5, zorder=2)
         
-        # Add simple MA for trend
-        ratio_ma20 = ratio_df['Ratio'].rolling(20).mean()
-        ax_hyg_ratio.plot(ratio_df.index, ratio_ma20, label='Ratio 20MA', color='orange', ls='--', lw=1, zorder=2)
+        # [MODIFIED] 18MA
+        ax_hyg_ratio.plot(ratio_df.index, ratio_df['Ratio_MA18'], label='Ratio 18MA', color='orange', ls='--', lw=1, zorder=2)
         
-        curr_ratio = ratio_df['Ratio'].iloc[-1]
-        prev_ratio = ratio_df['Ratio'].iloc[-2]
+        # [NEW] Ratio Cross Markers
+        r_val = ratio_df['Ratio']
+        r_ma = ratio_df['Ratio_MA18']
         
-        # Arrow logic
+        # Cross Up (Bullish)
+        r_cross_up = (r_val > r_ma) & (r_val.shift(1) < r_ma.shift(1))
+        # Cross Down (Bearish)
+        r_cross_down = (r_val < r_ma) & (r_val.shift(1) > r_ma.shift(1))
+        
+        ax_hyg_ratio.scatter(ratio_df.index[r_cross_up], r_val[r_cross_up], marker='^', color='green', s=80, zorder=5)
+        ax_hyg_ratio.scatter(ratio_df.index[r_cross_down], r_val[r_cross_down], marker='v', color='red', s=80, zorder=5)
+        
+        curr_ratio = r_val.iloc[-1]
+        prev_ratio = r_val.iloc[-2]
         arrow = "↗️" if curr_ratio > prev_ratio else "↘️"
         ax_hyg_ratio.text(ratio_df.index[-1], curr_ratio, f" {curr_ratio:.3f} {arrow}", color='purple', fontweight='bold')
         
@@ -750,11 +754,11 @@ def create_charts(data):
     else:
         ax_hyg_ratio.text(0.5, 0.5, "Ratio Data Unavailable", transform=ax_hyg_ratio.transAxes, ha='center')
 
-    ax_hyg_ratio.set_title('HYG / IEI Ratio (Risk Appetite: Rising=Risk On, Falling=Risk Off)', fontsize=12, fontweight='bold', color='#8E44AD')
+    ax_hyg_ratio.set_title('HYG / IEI Ratio (Crosses over 18MA)', fontsize=12, fontweight='bold', color='#8E44AD')
     ax_hyg_ratio.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_hyg_ratio.get_xticklabels(), visible=False)
 
-    # 6. SKEW Index Chart (Modified Visual)
+    # 5. SKEW Index Chart
     if 'skew_hist' in data and not data['skew_hist'].empty:
         skew_data = data['skew_hist']
         skew_data.index = skew_data.index.tz_localize(None).normalize()
@@ -777,7 +781,7 @@ def create_charts(data):
     ax_skew.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_skew.get_xticklabels(), visible=False)
 
-    # 7. VIX Absolute
+    # 6. VIX Absolute
     ax_vix_abs.plot(data['vix_hist'].index, data['vix_hist']['Close'], color='purple', label='VIX (Spot)', zorder=2)
     if data['vix3m_hist'] is not None and not data['vix3m_hist'].empty:
           ax_vix_abs.plot(data['vix3m_hist'].index, data['vix3m_hist']['Close'], color='gray', ls=':', label='VIX3M', zorder=2)
@@ -789,7 +793,7 @@ def create_charts(data):
     ax_vix_abs.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_vix_abs.get_xticklabels(), visible=False)
 
-    # 8. VIX Term Structure
+    # 7. VIX Term Structure
     term_data = data.get('vix_term_df')
     if term_data is not None and not term_data.empty:
         ax_ratio.plot(term_data.index, term_data['Ratio'], color='black', lw=1.2, label='Ratio (VIX/VIX3M)', zorder=2)
@@ -807,7 +811,7 @@ def create_charts(data):
     ax_ratio.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_ratio.get_xticklabels(), visible=False)
 
-    # 9. RSI(14)
+    # 8. RSI(14)
     ax_rsi.plot(hist.index, hist['RSI'], color='purple', label='RSI(14)', zorder=2)
     ax_rsi.axhline(70, color='red', ls='--', alpha=0.7, zorder=2)
     ax_rsi.axhline(30, color='green', ls='--', alpha=0.7, zorder=2)
@@ -818,7 +822,7 @@ def create_charts(data):
     ax_rsi.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_rsi.get_xticklabels(), visible=False)
 
-    # 10. MACD
+    # 9. MACD
     ax2.plot(hist.index, hist['MACD'], label='MACD', color='blue', zorder=2)
     ax2.plot(hist.index, hist['Signal'], label='Signal', color='orange', zorder=2)
     ax2.bar(hist.index, hist['MACD']-hist['Signal'], color='gray', alpha=0.3, zorder=2)
@@ -827,7 +831,7 @@ def create_charts(data):
     ax2.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax2.get_xticklabels(), visible=False)
     
-    # 11. VVIX / VIX Ratio
+    # 10. VVIX / VIX Ratio
     try:
         df_v = data['vix_hist'][['Close']].copy()
         df_vv = data['vvix_hist'][['Close']].copy()
@@ -855,7 +859,7 @@ def create_charts(data):
     ax_ratio_vvix.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_ratio_vvix.get_xticklabels(), visible=False)
 
-    # 12. RSI(2)
+    # 11. RSI(2)
     ax_rsi2.plot(hist.index, hist['RSI_2'], color='gray', label='RSI(2)', linewidth=1.2, zorder=2)
     ax_rsi2.axhline(10, color='green', linestyle='--', alpha=0.7, zorder=2)
     ax_rsi2.axhline(90, color='red', linestyle='--', alpha=0.7, zorder=2)
@@ -867,23 +871,7 @@ def create_charts(data):
     ax_rsi2.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_rsi2.get_xticklabels(), visible=False)
 
-    # 13. ADL (Raw)
-    ax_adl.plot(hist.index, hist['ADL'], color='black', label='ADL', linewidth=1.5, zorder=2)
-    ax_adl.plot(hist.index, hist['ADL_MA20'], color='orange', ls='--', label='ADL 20MA', linewidth=1, zorder=2)
-    
-    if not hist['ADL'].empty:
-        last_adl = hist['ADL'].iloc[-1]
-        ax_adl.text(hist.index[-1], last_adl, f"{last_adl:.0f}", 
-                    color='black', fontsize=9, fontweight='bold', ha='left', va='center')
-    
-    ax_adl.axhline(0, color='gray', ls=':', alpha=0.5, zorder=1)
-    ax_adl.set_title('Advance-Decline Line (Raw)', fontsize=12, fontweight='bold')
-    ax_adl.legend(loc='upper left')
-    ax_adl.grid(True, alpha=0.3, zorder=1)
-    ax_adl.set_xlabel('Date', fontsize=10)
-    plt.setp(ax_adl.get_xticklabels(), visible=False) # Hide X labels to match others
-
-    # 14. ADL Bollinger Band
+    # 12. ADL Bollinger Band (Updated Title)
     if 'ADL_Upper' in hist.columns:
         ax_adl_band.plot(hist.index, hist['ADL'], color='black', lw=1.5, zorder=3, label='ADL')
         ax_adl_band.plot(hist.index, hist['ADL_Upper'], color='red', ls='--', lw=1, zorder=2, label='Upper')
@@ -893,7 +881,7 @@ def create_charts(data):
         curr_z = hist['ADL_Z'].iloc[-1]
         t_color = 'red' if curr_z > 2.0 else 'green' if curr_z < -2.0 else 'black'
         ax_adl_band.text(hist.index[-1], hist['ADL'].iloc[-1], f" Z:{curr_z:.2f}", color=t_color, fontweight='bold', ha='left')
-        ax_adl_band.set_title('ADL Bollinger Bands (Market Breadth)', fontsize=12, fontweight='bold')
+        ax_adl_band.set_title('ADL Bollinger Bands (상승/하락 종목수의 차이)', fontsize=12, fontweight='bold')
         ax_adl_band.legend(loc='upper left', fontsize=8)
     else:
         ax_adl_band.text(0.5, 0.5, "No ADL Data", transform=ax_adl_band.transAxes, ha='center')
@@ -902,10 +890,10 @@ def create_charts(data):
     ax_adl_band.set_xlabel('Date')
 
     # === [Background Coloring] ===
-    # Updated list to include new axes
-    all_axes_except_trend = [ax1, ax_vol, ax_hyg, ax_hyg_ratio, ax_skew, ax_vix_abs, ax_ratio, ax_rsi, ax2, ax_ratio_vvix, ax_rsi2, ax_adl, ax_adl_band]
+    # Apply to all axes including ax_trend
+    all_axes = [ax1, ax_vol, ax_trend, ax_hyg_ratio, ax_skew, ax_vix_abs, ax_ratio, ax_rsi, ax2, ax_ratio_vvix, ax_rsi2, ax_adl_band]
     
-    for ax in all_axes_except_trend:
+    for ax in all_axes:
         trans = ax.get_xaxis_transform()
         for season_name, color in season_colors.items():
             mask = (hist['Season'] == season_name)
@@ -917,8 +905,8 @@ def create_charts(data):
 
 # === [Main] ===
 def main():
-    st.title("🦅 HK Options Advisory (Grand Master v23.0 - SKEW Logic)")
-    st.caption(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Logic: MACD 4-Zone + SKEW (Safety) | Optimized")
+    st.title("🦅 HK Options Advisory (Grand Master v23.1 - Forest Logic)")
+    st.caption(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Logic: MACD 4-Zone + SKEW + Forest&Tree")
 
     with st.spinner('Analyzing Market Structure...'):
         try:
@@ -950,7 +938,7 @@ def main():
     elif ratio_val < 0.9: st.sidebar.success(f"Ratio: {ratio_val:.4f} ✅")
     else: st.sidebar.info(f"Ratio: {ratio_val:.4f}")
 
-    # SKEW Status (New)
+    # SKEW Status
     skew_status = log.get('skew', 'none')
     curr_skew = log.get('curr_skew', 0)
     if skew_status == 'black_swan': st.sidebar.error(f"SKEW: {curr_skew:.1f} (BLACK SWAN 🚨)")
@@ -965,11 +953,6 @@ def main():
         if vvix_change > 5.0: st.sidebar.error(f"VVIX Change: +{vvix_change:.1f}% ⚠️")
         else: st.sidebar.success(f"VVIX Change: {vvix_change:.1f}%")
 
-    # RSI(2)
-    rsi2_val = data['rsi2']
-    if rsi2_val < 10: st.sidebar.success(f"RSI(2): {rsi2_val:.1f} (Dip) ✅")
-    else: st.sidebar.info(f"RSI(2): {rsi2_val:.1f}")
-
     # Signals
     if log.get('capitulation') == 'detected': st.sidebar.success("Capitulation: ✅ DETECTED")
     else: st.sidebar.info("Capitulation: ❌ None")
@@ -977,12 +960,18 @@ def main():
     if log.get('vvix_trap') == 'detected': st.sidebar.error("VVIX Trap: ⚠️ DETECTED")
     else: st.sidebar.success("VVIX Trap: ✅ None")
     
-    # [NEW SIDEBAR] ADL Z-Score
+    # [SIDEBAR] ADL Z-Score
     st.sidebar.markdown("---")
     adl_z = data.get('adl_z', 0)
     st.sidebar.metric("ADL Z-Score", f"{adl_z:.2f}")
-    if adl_z > 2.0: st.sidebar.error("Breadth: Overbought 🚨")
-    elif adl_z < -2.0: st.sidebar.success("Breadth: Oversold (Buy Dip) ✅")
+    
+    # Forest & Tree State Sidebar
+    ft_state = log.get('forest_tree_state', 'neutral')
+    if ft_state == 'strong_buy': st.sidebar.success("🌳 Forest&Tree: STRONG BUY")
+    elif ft_state == 'buy': st.sidebar.success("🌳 Forest&Tree: BUY")
+    elif ft_state == 'strong_sell': st.sidebar.error("🌳 Forest&Tree: STRONG SELL")
+    elif ft_state == 'sell': st.sidebar.warning("🌳 Forest&Tree: SELL")
+    else: st.sidebar.info("🌳 Forest&Tree: Neutral")
 
     st.sidebar.markdown("---")
     st.sidebar.subheader(f"📊 Total Score: {score}")
@@ -1032,6 +1021,20 @@ def main():
     st.markdown("".join(html_season_list), unsafe_allow_html=True)
 
     # 2. Scorecard
+    
+    # Helper for boolean flags in table
+    adl_neg_match = log.get('adl_neg_penalty', False)
+    ft_state_match = log.get('forest_tree_state', 'neutral')
+    
+    def hl_bool(is_true):
+        if is_true: return "style='border: 3px solid red; background-color: #ffcdd2; font-weight: bold; color: #b71c1c; padding: 4px;'"
+        return td_style
+        
+    def hl_ft(target_state):
+        if ft_state_match == target_state:
+             return "style='border: 3px solid #FF5722; background-color: #FFF8E1; font-weight: bold; color: #D84315; padding: 4px;'"
+        return td_style
+
     html_score_list = [
         "<h3>2. Expert Matrix (Mobile Ver.)</h3>",
         "<table style='border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 12px; text-align: center;'>",
@@ -1040,7 +1043,7 @@ def main():
         f"<th {th_style}>☀️</th><th {th_style}>🍂</th><th {th_style}>❄️</th><th {th_style}>🌱</th>",
         "</tr>",
         
-        # 0. SKEW (New)
+        # 0. SKEW
         f"<tr><td rowspan='4' {td_style}><b>SKEW</b><br><span style='font-size:10px; color:purple;'>Current:{skew_disp}</span></td>",
         f"<td {td_style}><b>Black Swan</b><br>(&ge;155)</td>",
         f"<td colspan='4' {hl_score('skew', 'black_swan', 'ALL')}><b style='color:red;'>-15</b></td></tr>",
@@ -1055,10 +1058,8 @@ def main():
         f"<tr><td rowspan='3' {td_style}><b>VIX Term</b><br><span style='font-size:10px; color:blue;'>Ratio:{vix_ratio_disp}</span></td>",
         f"<td {td_style}><b>Easy</b><br>(&lt;0.9)</td>",
         f"<td colspan='4' {hl_score('term', 'contango', 'ALL')}>+3</td></tr>",
-        
         f"<tr><td {td_style}>Normal<br>(0.9~1)</td>",
         f"<td colspan='4' {hl_score('term', 'normal', 'ALL')}>0</td></tr>",
-        
         f"<tr><td {td_style}><b>Collapse</b><br>(&gt;1.0)</td>",
         f"<td colspan='4' {hl_score('term', 'backwardation', 'ALL')}><b>-10</b></td></tr>",
         
@@ -1076,75 +1077,67 @@ def main():
         f"<tr><td rowspan='4' {td_style}>RSI(14)</td>",
         f"<td {td_style}>Over (>70)</td>",
         f"<td {hl_score('rsi', 'over', 'SUMMER')}>-1</td><td {hl_score('rsi', 'over', 'AUTUMN')}>-3</td><td {hl_score('rsi', 'over', 'WINTER')}><b style='color:red;'>-10</b></td><td {hl_score('rsi', 'over', 'SPRING')}>-2</td></tr>",
-        
         f"<tr><td {td_style}>Neutral</td>",
         f"<td {hl_score('rsi', 'neutral', 'SUMMER')}>+1</td><td {hl_score('rsi', 'neutral', 'AUTUMN')}>0</td><td {hl_score('rsi', 'neutral', 'WINTER')}>-1</td><td {hl_score('rsi', 'neutral', 'SPRING')}>+1</td></tr>",
-        
         f"<tr><td {td_style}>Under (<30)</td>",
         f"<td {hl_score('rsi', 'under', 'SUMMER')}>+5</td><td {hl_score('rsi', 'under', 'AUTUMN')}>+4</td><td {hl_score('rsi', 'under', 'WINTER')}>0</td><td {hl_score('rsi', 'under', 'SPRING')}>+4</td></tr>",
-        
         f"<tr><td {td_style}>🚀 Escape</td>",
         f"<td {hl_score('rsi', 'escape', 'SUMMER')}>3~5</td><td {hl_score('rsi', 'escape', 'AUTUMN')}>3~5</td><td {hl_score('rsi', 'escape', 'WINTER')}>3~5</td><td {hl_score('rsi', 'escape', 'SPRING')}>3~5</td></tr>",
         
-        # 5. RSI(2)
-        f"<tr><td {td_style}><b>RSI(2)</b></td>",
-        f"<td {td_style}><b>Dip</b><br>(&lt;10)</td>",
-        f"<td colspan='4' {hl_score('rsi2_dip', 'detected', 'ALL')}><b style='color:green;'>+8</b></td></tr>",
+        # 5. [NEW] ADL Negative Penalty
+        f"<tr><td {td_style}><b>ADL Penalty</b></td>",
+        f"<td {td_style}>Z-Score < 0</td>",
+        f"<td colspan='4' {hl_bool(adl_neg_match)}><b style='color:red;'>-5</b></td></tr>",
 
-        # 6. VIX Level
+        # 6. [NEW] Forest & Tree Strategy
+        f"<tr><td rowspan='4' {td_style}><b>Forest & Tree</b><br><span style='font-size:10px;'>(ADL+RSI2)</span></td>",
+        f"<td {td_style}>Strong Buy<br>(Z&ge;0.9, R2&lt;10)</td>",
+        f"<td colspan='4' {hl_ft('strong_buy')}><b style='color:green;'>+5</b></td></tr>",
+        f"<tr><td {td_style}>Buy<br>(Z&ge;0.9, R2&lt;20)</td>",
+        f"<td colspan='4' {hl_ft('buy')}>+2</td></tr>",
+        f"<tr><td {td_style}>Sell<br>(Z&lt;0, R2&gt;80)</td>",
+        f"<td colspan='4' {hl_ft('sell')}>-2</td></tr>",
+        f"<tr><td {td_style}>Strong Sell<br>(Z&lt;0, R2&gt;90)</td>",
+        f"<td colspan='4' {hl_ft('strong_sell')}><b style='color:red;'>-5</b></td></tr>",
+
+        # 7. VIX Level
         f"<tr><td rowspan='4' {td_style}>VIX</td>",
         f"<td {td_style}>Stable (<20)</td>",
         f"<td {hl_score('vix', 'stable', 'SUMMER')}>+2</td><td {hl_score('vix', 'stable', 'AUTUMN')}>0</td><td {hl_score('vix', 'stable', 'WINTER')}>-2</td><td {hl_score('vix', 'stable', 'SPRING')}>+1</td></tr>",
-        
         f"<tr><td {td_style}>Fear (20-35)</td>",
         f"<td {hl_score('vix', 'fear', 'SUMMER')}>-3</td><td {hl_score('vix', 'fear', 'AUTUMN')}>-4</td><td {hl_score('vix', 'fear', 'WINTER')}>+2</td><td {hl_score('vix', 'fear', 'SPRING')}>-1</td></tr>",
-        
         f"<tr><td {td_style}>Panic Rise</td>",
         f"<td {hl_score('vix', 'panic_rise', 'SUMMER')}>-5</td><td {hl_score('vix', 'panic_rise', 'AUTUMN')}>-6</td><td {hl_score('vix', 'panic_rise', 'WINTER')}>-5</td><td {hl_score('vix', 'panic_rise', 'SPRING')}>-4</td></tr>",
-        
         f"<tr><td {td_style}>📉 Peak Out</td>",
         f"<td {hl_score('vix', 'peak_out', 'SUMMER')}>-</td><td {hl_score('vix', 'peak_out', 'AUTUMN')}>-</td><td {hl_score('vix', 'peak_out', 'WINTER')}>+7</td><td {hl_score('vix', 'peak_out', 'SPRING')}>-</td></tr>",
         
-        # 7. Bollinger
+        # 8. Bollinger
         f"<tr><td rowspan='5' {td_style}>BB Z-Score<br><span style='font-size:10px; color:blue;'>{z_disp}</span></td>",
         f"<td {td_style} style='color:red;'><b>Overbought</b><br>(&gt;1.8)</td>",
         f"<td colspan='4' {hl_score('bb', 'overbought_danger', 'ALL')}><b style='color:red;'>-3</b></td></tr>",
-        
         f"<tr><td {td_style}><b>Uptrend</b><br>(0.5~1.8)</td>",
         f"<td colspan='4' {hl_score('bb', 'uptrend', 'ALL')}>+1</td></tr>",
-        
         f"<tr><td {td_style}>Neutral</td>",
         f"<td colspan='4' {hl_score('bb', 'neutral', 'ALL')}>0</td></tr>",
-        
         f"<tr><td {td_style}><b>Value</b><br>(-1.8~-0.5)</td>",
         f"<td colspan='4' {hl_score('bb', 'dip_buying', 'ALL')}>+2</td></tr>",
-        
         f"<tr><td {td_style}><b>Bottom</b><br>(Z&le;-1.8)</td>",
         f"<td colspan='4' {hl_score('bb', 'oversold_guard', 'ALL')}><b>+1</b></td></tr>",
         
-        # 8. Trend & Vol
+        # 9. Trend & Vol
         f"<tr><td {td_style}>Trend</td><td {td_style}>Price > 20MA</td>",
         f"<td {hl_score('trend', 'up', 'SUMMER')}>+2</td><td {hl_score('trend', 'up', 'AUTUMN')}>+2</td><td {hl_score('trend', 'up', 'WINTER')}>+3</td><td {hl_score('trend', 'up', 'SPRING')}>+3</td></tr>",
-        
         f"<tr><td {td_style}>Volume</td><td {td_style}>Explode</td>",
         f"<td {hl_score('vol', 'explode', 'SUMMER')}>+2</td><td {hl_score('vol', 'explode', 'AUTUMN')}>+3</td><td {hl_score('vol', 'explode', 'WINTER')}>+3</td><td {hl_score('vol', 'explode', 'SPRING')}>+2</td></tr>",
         
-        # 9. MACD (4-Zone)
+        # 10. MACD (4-Zone)
         f"<tr><td rowspan='4' {td_style}>MACD</td>",
-        
-        # Case 1
         f"<td {td_style}>📈 <b>Accel</b><br><span style='font-size:10px;'>(Up+Gold)</span></td>",
         f"<td colspan='4' {hl_score('macd', 'zero_up_golden', 'ALL')}><b style='color:green;'>+3</b></td></tr>",
-        
-        # Case 2
         f"<td {td_style}>📉 <b>Corr</b><br><span style='font-size:10px;'>(Up+Dead)</span></td>",
         f"<td colspan='4' {hl_score('macd', 'zero_up_dead', 'ALL')}><b style='color:orange;'>-3</b></td></tr>",
-        
-        # Case 3
         f"<td {td_style}>🎣 <b>Trap</b><br><span style='font-size:10px;'>(Down+Gold)</span></td>",
         f"<td colspan='4' {hl_score('macd', 'zero_down_golden', 'ALL')}><b style='color:gray;'>0</b></td></tr>",
-        
-        # Case 4
         f"<td {td_style}>☔ <b>Crash</b><br><span style='font-size:10px;'>(Down+Dead)</span></td>",
         f"<td colspan='4' {hl_score('macd', 'zero_down_dead', 'ALL')}><b style='color:red;'>-5</b></td></tr>",
         
