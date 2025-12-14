@@ -881,7 +881,7 @@ def create_charts(data):
         curr_z = hist['ADL_Z'].iloc[-1]
         t_color = 'red' if curr_z > 2.0 else 'green' if curr_z < -2.0 else 'black'
         ax_adl_band.text(hist.index[-1], hist['ADL'].iloc[-1], f" Z:{curr_z:.2f}", color=t_color, fontweight='bold', ha='left')
-        ax_adl_band.set_title('ADL Bollinger Bands (상승/하락 종목수의 차이)', fontsize=12, fontweight='bold')
+        ax_adl_band.set_title('ADL Bollinger Bands (Count of Up/Down Stocks)', fontsize=12, fontweight='bold')
         ax_adl_band.legend(loc='upper left', fontsize=8)
     else:
         ax_adl_band.text(0.5, 0.5, "No ADL Data", transform=ax_adl_band.transAxes, ha='center')
@@ -1200,3 +1200,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
