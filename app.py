@@ -13,7 +13,7 @@ APP_PASSWORD = "1979"
 
 # === [Page Configuration] ===
 st.set_page_config(
-    page_title="HK Options Advisory (Grand Master v23.1 - Forest Logic)",
+    page_title="HK Options Advisory (Grand Master v23.2 - McClellan Logic)",
     page_icon="🦅",
     layout="wide"
 )
@@ -106,7 +106,7 @@ def get_market_data():
     
     hist['Vol_MA20'] = hist['Volume'].rolling(window=20).mean()
 
-    # Process ADL Data
+    # [MODIFIED] Process McClellan Oscillator (Instead of ADL BB)
     add_hist = results["^ADD"]['hist']
     if not add_hist.empty and len(add_hist) > 10:
         hist.index = hist.index.tz_localize(None).normalize()
@@ -114,26 +114,18 @@ def get_market_data():
         
         hist = hist.join(add_hist['Close'].rename('Net_Issues'), how='left')
         hist['Net_Issues'] = hist['Net_Issues'].ffill().fillna(0)
-        hist['ADL'] = hist['Net_Issues'].cumsum()
-        hist['ADL_MA20'] = hist['ADL'].rolling(window=20).mean()
     else:
-        # Fallback Logic
+        # Fallback Logic (Using Price Change for Net Issues approx)
         print("⚠️ ADL Fetch Failed (^ADD) - Using Fallback")
-        hist['Net_Issues'] = np.where(hist['Close'] > hist['Close'].shift(1), 1, -1)
+        hist['Net_Issues'] = np.where(hist['Close'] > hist['Close'].shift(1), 1000, -1000) # Scale up for visibility
         hist['Net_Issues'].iloc[0] = 0
-        hist['ADL'] = hist['Net_Issues'].cumsum() * 100
-        hist['ADL_MA20'] = hist['ADL'].rolling(window=20).mean()
     
-    # ADL Bollinger Bands Logic
-    hist['ADL_Std'] = hist['ADL'].rolling(window=20).std()
-    hist['ADL_Upper'] = hist['ADL_MA20'] + (hist['ADL_Std'] * 2)
-    hist['ADL_Lower'] = hist['ADL_MA20'] - (hist['ADL_Std'] * 2)
+    # McClellan Oscillator Calculation
+    # Formula: EMA_19(Net Issues) - EMA_39(Net Issues)
+    hist['EMA_19'] = hist['Net_Issues'].ewm(span=19, adjust=False).mean()
+    hist['EMA_39'] = hist['Net_Issues'].ewm(span=39, adjust=False).mean()
+    hist['McClellan'] = hist['EMA_19'] - hist['EMA_39']
     
-    # ADL Z-Score
-    numerator = hist['ADL'] - hist['ADL_MA20']
-    denominator = hist['ADL_Std']
-    hist['ADL_Z'] = np.where(denominator == 0, 0, numerator / denominator)
-
     # [NEW] Process HYG & IEI Data
     hyg_hist = results["HYG"]['hist'].copy()
     iei_hist = results["IEI"]['hist'].copy()
@@ -223,7 +215,7 @@ def get_market_data():
         'vix': curr_vix, 'vix_prev': prev_vix,
         'vix3m': vix3m_val,
         'iv': current_iv,
-        'adl_z': hist['ADL_Z'].iloc[-1],
+        'mcclellan': hist['McClellan'].iloc[-1], # Changed from adl_z
         'hist': hist, 'vix_hist': vix_hist, 'vix3m_hist': vix3m_hist, 'vvix_hist': vvix_hist,
         'skew_hist': skew_hist,
         'vix_term_df': vix_term_df,
@@ -281,15 +273,16 @@ def detect_vvix_trap(data, log):
     log['vvix_trap'] = 'none'
     return 0
 
-# [NEW] Logic for "Forest & Tree" (ADL Z + RSI2)
+# [MODIFIED] Logic for "Forest & Tree" (McClellan + RSI2)
 def analyze_adl_rsi2_strategy(data, log):
-    adl_z = data['adl_z']
+    mcclellan = data['mcclellan'] # Use McClellan instead of Z-score
     rsi2 = data['rsi2']
     pts = 0
     state = 'neutral'
     
-    # 1. Negative ADL Z Penalty (Explicit Request)
-    if adl_z < 0:
+    # 1. Negative Width Penalty (Forest is dying)
+    # McClellan < 0 means more selling volume/issues on average
+    if mcclellan < 0:
         pts += -5
         log['adl_neg_penalty'] = True
     else:
@@ -298,7 +291,7 @@ def analyze_adl_rsi2_strategy(data, log):
     # 2. Forest & Tree Strategy
     strategy_pts = 0
     
-    if adl_z >= 0.9: # Forest is growing
+    if mcclellan > 0: # Forest is growing (Money Inflow)
         if rsi2 < 10: 
             strategy_pts = 5
             state = 'strong_buy'
@@ -306,7 +299,7 @@ def analyze_adl_rsi2_strategy(data, log):
             strategy_pts = 2
             state = 'buy'
             
-    elif adl_z < 0: # Forest is dying
+    elif mcclellan < 0: # Forest is dying (Money Outflow)
         if rsi2 > 90:
             strategy_pts = -5
             state = 'strong_sell'
@@ -499,7 +492,7 @@ def analyze_expert_logic(d):
     pts_vvix = detect_vvix_trap(d, log)
     score += pts_vvix
     
-    # [NEW] Replaced simple RSI2 Dip with "Forest & Tree" logic
+    # [MODIFIED] Replaced logic using McClellan Oscillator
     pts_forest = analyze_adl_rsi2_strategy(d, log)
     score += pts_forest
 
@@ -656,15 +649,14 @@ def create_charts(data):
     choices = ['SUMMER', 'AUTUMN', 'WINTER']
     hist['Season'] = np.select(conditions, choices, default='SPRING')
     
-    # [UPDATE] Colors: More Saturated Spring/Autumn, Distinct Winter
+    # Colors
     season_colors = {
-        'SUMMER': '#FFEBEE',           # Pale Red (Original)
-        'AUTUMN': '#FFCCBC',           # Saturated Orange (Deep Orange 100)
-        'WINTER': '#BBDEFB',           # Distinct Blue (Blue 100) - Different from Spring
-        'SPRING': '#C8E6C9'            # Saturated Green (Green 100)
+        'SUMMER': '#FFEBEE',           
+        'AUTUMN': '#FFCCBC',           
+        'WINTER': '#BBDEFB',           
+        'SPRING': '#C8E6C9'            
     }
     
-    # [UPDATE] Removed HYG Price and ADL Raw -> 12 Rows
     fig = plt.figure(figsize=(10, 36))
     
     gs = fig.add_gridspec(12, 1, height_ratios=[2, 0.6, 1.5, 1.2, 1, 1, 1, 1, 1, 1, 1, 1.5])
@@ -673,7 +665,7 @@ def create_charts(data):
     ax_vol = fig.add_subplot(gs[1], sharex=ax1)
     ax_trend = fig.add_subplot(gs[2], sharex=ax1)
     
-    ax_hyg_ratio = fig.add_subplot(gs[3], sharex=ax1) # HYG Price removed
+    ax_hyg_ratio = fig.add_subplot(gs[3], sharex=ax1) 
     
     ax_skew = fig.add_subplot(gs[4], sharex=ax1) 
     ax_vix_abs = fig.add_subplot(gs[5], sharex=ax1)
@@ -682,7 +674,7 @@ def create_charts(data):
     ax2 = fig.add_subplot(gs[8], sharex=ax1)
     ax_ratio_vvix = fig.add_subplot(gs[9], sharex=ax1)
     ax_rsi2 = fig.add_subplot(gs[10], sharex=ax1)
-    ax_adl_band = fig.add_subplot(gs[11], sharex=ax1) # ADL Raw removed
+    ax_mcclellan = fig.add_subplot(gs[11], sharex=ax1) # [MODIFIED] McClellan
 
     # 1. Price Chart
     ax1.plot(hist.index, hist['Close'], label='QQQ', color='black', alpha=0.9, zorder=2)
@@ -703,18 +695,14 @@ def create_charts(data):
     ax_vol.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_vol.get_xticklabels(), visible=False)
     
-    # 3. Trend Graph (Modified: Season Background + Markers)
+    # 3. Trend Graph
     ax_trend.plot(hist.index, hist['Close'], label='QQQ', color='black', alpha=0.5, zorder=1)
     ax_trend.plot(hist.index, hist['MA20'], label='20MA', color='green', ls='--', lw=1, zorder=2)
     ax_trend.plot(hist.index, hist['MA50'], label='50MA', color='blue', ls='-', lw=1, zorder=2)
     
-    # Detect Golden/Dead Cross on MACD for markers
     macd = hist['MACD']
     sig = hist['Signal']
-    
-    # Golden Cross: MACD crosses above Signal
     golden_cross = (macd > sig) & (macd.shift(1) < sig.shift(1))
-    # Dead Cross: MACD crosses below Signal
     dead_cross = (macd < sig) & (macd.shift(1) > sig.shift(1))
     
     ax_trend.scatter(hist.index[golden_cross], hist['Close'][golden_cross], marker='^', color='green', s=100, label='MACD Golden', zorder=5)
@@ -725,21 +713,15 @@ def create_charts(data):
     ax_trend.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_trend.get_xticklabels(), visible=False)
 
-    # 4. HYG / IEI Ratio (Modified: 18MA + Cross Markers)
+    # 4. HYG / IEI Ratio
     if 'hyg_iei_ratio' in data and not data['hyg_iei_ratio'].empty:
         ratio_df = data['hyg_iei_ratio']
         ax_hyg_ratio.plot(ratio_df.index, ratio_df['Ratio'], label='HYG/IEI Ratio', color='#8E44AD', lw=1.5, zorder=2)
-        
-        # [MODIFIED] 18MA
         ax_hyg_ratio.plot(ratio_df.index, ratio_df['Ratio_MA18'], label='Ratio 18MA', color='orange', ls='--', lw=1, zorder=2)
         
-        # [NEW] Ratio Cross Markers
         r_val = ratio_df['Ratio']
         r_ma = ratio_df['Ratio_MA18']
-        
-        # Cross Up (Bullish)
         r_cross_up = (r_val > r_ma) & (r_val.shift(1) < r_ma.shift(1))
-        # Cross Down (Bearish)
         r_cross_down = (r_val < r_ma) & (r_val.shift(1) > r_ma.shift(1))
         
         ax_hyg_ratio.scatter(ratio_df.index[r_cross_up], r_val[r_cross_up], marker='^', color='green', s=80, zorder=5)
@@ -749,7 +731,6 @@ def create_charts(data):
         prev_ratio = r_val.iloc[-2]
         arrow = "↗️" if curr_ratio > prev_ratio else "↘️"
         ax_hyg_ratio.text(ratio_df.index[-1], curr_ratio, f" {curr_ratio:.3f} {arrow}", color='purple', fontweight='bold')
-        
         ax_hyg_ratio.legend(loc='upper left', fontsize=9)
     else:
         ax_hyg_ratio.text(0.5, 0.5, "Ratio Data Unavailable", transform=ax_hyg_ratio.transAxes, ha='center')
@@ -758,13 +739,12 @@ def create_charts(data):
     ax_hyg_ratio.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_hyg_ratio.get_xticklabels(), visible=False)
 
-    # 5. SKEW Index Chart
+    # 5. SKEW Index
     if 'skew_hist' in data and not data['skew_hist'].empty:
         skew_data = data['skew_hist']
         skew_data.index = skew_data.index.tz_localize(None).normalize()
         ax_skew.plot(skew_data.index, skew_data['Close'], color='purple', label='SKEW Index', lw=1.2, zorder=2)
         
-        # Risk Lines
         ax_skew.axhline(155, color='red', ls='-', lw=2, label='Black Swan (155)', zorder=2)
         ax_skew.axhline(145, color='orange', ls='--', lw=1.5, label='High Risk (145)', zorder=2)
         ax_skew.axhline(115, color='green', ls=':', lw=1.5, label='Complacency (115)', zorder=2)
@@ -871,27 +851,31 @@ def create_charts(data):
     ax_rsi2.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_rsi2.get_xticklabels(), visible=False)
 
-    # 12. ADL Bollinger Band (Updated Title)
-    if 'ADL_Upper' in hist.columns:
-        ax_adl_band.plot(hist.index, hist['ADL'], color='black', lw=1.5, zorder=3, label='ADL')
-        ax_adl_band.plot(hist.index, hist['ADL_Upper'], color='red', ls='--', lw=1, zorder=2, label='Upper')
-        ax_adl_band.plot(hist.index, hist['ADL_Lower'], color='green', ls='--', lw=1, zorder=2, label='Lower')
-        ax_adl_band.fill_between(hist.index, hist['ADL_Upper'], hist['ADL_Lower'], color='gray', alpha=0.1, zorder=1)
-        
-        curr_z = hist['ADL_Z'].iloc[-1]
-        t_color = 'red' if curr_z > 2.0 else 'green' if curr_z < -2.0 else 'black'
-        ax_adl_band.text(hist.index[-1], hist['ADL'].iloc[-1], f" Z:{curr_z:.2f}", color=t_color, fontweight='bold', ha='left')
-        ax_adl_band.set_title('ADL Bollinger Bands (Count of Up/Down Stocks)', fontsize=12, fontweight='bold')
-        ax_adl_band.legend(loc='upper left', fontsize=8)
-    else:
-        ax_adl_band.text(0.5, 0.5, "No ADL Data", transform=ax_adl_band.transAxes, ha='center')
-
-    ax_adl_band.grid(True, alpha=0.3)
-    ax_adl_band.set_xlabel('Date')
+    # 12. [MODIFIED] McClellan Oscillator
+    mc_data = hist['McClellan']
+    
+    # Bar colors based on value (>0 Green, <0 Red)
+    bar_colors = ['#2E7D32' if v >= 0 else '#C62828' for v in mc_data]
+    
+    ax_mcclellan.bar(hist.index, mc_data, color=bar_colors, alpha=0.6, width=1.0, zorder=2, label='Oscillator')
+    
+    # Reference Lines
+    ax_mcclellan.axhline(0, color='black', lw=1, zorder=3)
+    ax_mcclellan.axhline(100, color='red', ls=':', lw=1, label='Overbought (+100)', zorder=2)
+    ax_mcclellan.axhline(-100, color='green', ls=':', lw=1, label='Oversold (-100)', zorder=2)
+    
+    curr_mc = mc_data.iloc[-1]
+    mc_color = 'green' if curr_mc > 0 else 'red'
+    ax_mcclellan.text(hist.index[-1], curr_mc, f" {curr_mc:.1f}", color=mc_color, fontweight='bold', ha='left')
+    
+    ax_mcclellan.set_title('McClellan Oscillator (EMA19 - EMA39 of Net Issues)', fontsize=12, fontweight='bold')
+    ax_mcclellan.legend(loc='upper left', fontsize=8)
+    ax_mcclellan.grid(True, alpha=0.3)
+    ax_mcclellan.set_xlabel('Date')
 
     # === [Background Coloring] ===
-    # Apply to all axes including ax_trend
-    all_axes = [ax1, ax_vol, ax_trend, ax_hyg_ratio, ax_skew, ax_vix_abs, ax_ratio, ax_rsi, ax2, ax_ratio_vvix, ax_rsi2, ax_adl_band]
+    # Apply to all axes including ax_mcclellan
+    all_axes = [ax1, ax_vol, ax_trend, ax_hyg_ratio, ax_skew, ax_vix_abs, ax_ratio, ax_rsi, ax2, ax_ratio_vvix, ax_rsi2, ax_mcclellan]
     
     for ax in all_axes:
         trans = ax.get_xaxis_transform()
@@ -905,8 +889,8 @@ def create_charts(data):
 
 # === [Main] ===
 def main():
-    st.title("🦅 HK Options Advisory (Grand Master v23.1 - Forest Logic)")
-    st.caption(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Logic: MACD 4-Zone + SKEW + Forest&Tree")
+    st.title("🦅 HK Options Advisory (Grand Master v23.2 - McClellan Logic)")
+    st.caption(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Logic: MACD 4-Zone + SKEW + McClellan(Forest)")
 
     with st.spinner('Analyzing Market Structure...'):
         try:
@@ -960,10 +944,10 @@ def main():
     if log.get('vvix_trap') == 'detected': st.sidebar.error("VVIX Trap: ⚠️ DETECTED")
     else: st.sidebar.success("VVIX Trap: ✅ None")
     
-    # [SIDEBAR] ADL Z-Score
+    # [SIDEBAR] McClellan (Replaced ADL Z)
     st.sidebar.markdown("---")
-    adl_z = data.get('adl_z', 0)
-    st.sidebar.metric("ADL Z-Score", f"{adl_z:.2f}")
+    mc_val = data.get('mcclellan', 0)
+    st.sidebar.metric("McClellan Osc", f"{mc_val:.1f}")
     
     # Forest & Tree State Sidebar
     ft_state = log.get('forest_tree_state', 'neutral')
@@ -1084,20 +1068,20 @@ def main():
         f"<tr><td {td_style}>🚀 Escape</td>",
         f"<td {hl_score('rsi', 'escape', 'SUMMER')}>3~5</td><td {hl_score('rsi', 'escape', 'AUTUMN')}>3~5</td><td {hl_score('rsi', 'escape', 'WINTER')}>3~5</td><td {hl_score('rsi', 'escape', 'SPRING')}>3~5</td></tr>",
         
-        # 5. [NEW] ADL Negative Penalty
-        f"<tr><td {td_style}><b>ADL Penalty</b></td>",
-        f"<td {td_style}>Z-Score < 0</td>",
+        # 5. [MODIFIED] McClellan Penalty
+        f"<tr><td {td_style}><b>Forest Check</b></td>",
+        f"<td {td_style}>McClellan < 0</td>",
         f"<td colspan='4' {hl_bool(adl_neg_match)}><b style='color:red;'>-5</b></td></tr>",
 
-        # 6. [NEW] Forest & Tree Strategy
-        f"<tr><td rowspan='4' {td_style}><b>Forest & Tree</b><br><span style='font-size:10px;'>(ADL+RSI2)</span></td>",
-        f"<td {td_style}>Strong Buy<br>(Z&ge;0.9, R2&lt;10)</td>",
+        # 6. [MODIFIED] Forest & Tree Strategy
+        f"<tr><td rowspan='4' {td_style}><b>Forest & Tree</b><br><span style='font-size:10px;'>(Mc+RSI2)</span></td>",
+        f"<td {td_style}>Strong Buy<br>(Mc&gt;0, R2&lt;10)</td>",
         f"<td colspan='4' {hl_ft('strong_buy')}><b style='color:green;'>+5</b></td></tr>",
-        f"<tr><td {td_style}>Buy<br>(Z&ge;0.9, R2&lt;20)</td>",
+        f"<tr><td {td_style}>Buy<br>(Mc&gt;0, R2&lt;20)</td>",
         f"<td colspan='4' {hl_ft('buy')}>+2</td></tr>",
-        f"<tr><td {td_style}>Sell<br>(Z&lt;0, R2&gt;80)</td>",
+        f"<tr><td {td_style}>Sell<br>(Mc&lt;0, R2&gt;80)</td>",
         f"<td colspan='4' {hl_ft('sell')}>-2</td></tr>",
-        f"<tr><td {td_style}>Strong Sell<br>(Z&lt;0, R2&gt;90)</td>",
+        f"<tr><td {td_style}>Strong Sell<br>(Mc&lt;0, R2&gt;90)</td>",
         f"<td colspan='4' {hl_ft('strong_sell')}><b style='color:red;'>-5</b></td></tr>",
 
         # 7. VIX Level
@@ -1200,4 +1184,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
