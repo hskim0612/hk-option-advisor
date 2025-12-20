@@ -651,10 +651,10 @@ def create_charts(data):
     
     # Colors
     season_colors = {
-        'SUMMER': '#FFEBEE',           
-        'AUTUMN': '#FFCCBC',           
-        'WINTER': '#BBDEFB',           
-        'SPRING': '#C8E6C9'            
+        'SUMMER': '#FFEBEE',            
+        'AUTUMN': '#FFCCBC',            
+        'WINTER': '#BBDEFB',            
+        'SPRING': '#C8E6C9'             
     }
     
     fig = plt.figure(figsize=(10, 36))
@@ -886,6 +886,78 @@ def create_charts(data):
 
     plt.tight_layout()
     return fig
+
+# === [NEW] Leverage Sentiment Chart Function ===
+def create_leverage_sentiment_chart():
+    """
+    TQQQ/SQQQ 거래량을 분석하여 시장의 투기 강도(FOMO)와 공포 심리를 시각화합니다.
+    """
+    try:
+        # 1. 데이터 수집 (최근 1년 데이터)
+        df = yf.download(['QQQ', 'TQQQ', 'SQQQ'], period='1y', progress=False)
+        
+        # 2. 데이터 전처리 (yfinance 최신/구버전 호환 처리)
+        if isinstance(df.columns, pd.MultiIndex):
+            vol = df['Volume']
+            close = df['Close']
+        else:
+            # 단일 레벨 컬럼인 경우 (구버전)
+            vol = df[['QQQ', 'TQQQ', 'SQQQ']] 
+            close = df[['QQQ', 'TQQQ', 'SQQQ']]
+
+        # 3. 지표 계산 (5일 이동평균으로 노이즈 제거)
+        # [지표 A] 투기 강도 (Speculation Index)
+        spec_index = (vol['TQQQ'] / vol['QQQ']).rolling(window=5).mean()
+
+        # [지표 B] 공포/탐욕 비율 (Sentiment Ratio)
+        sent_ratio = (vol['TQQQ'] / vol['SQQQ']).rolling(window=5).mean()
+
+        # 4. 그래프 그리기 (3단 구성)
+        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 12), sharex=True, 
+                                          gridspec_kw={'height_ratios': [2, 1, 1]})
+
+        # [패널 1] QQQ 가격
+        ax1.plot(close.index, close['QQQ'], color='black', label='QQQ Price', lw=1.5)
+        ax1.set_title('1. QQQ Price Trend', fontweight='bold', fontsize=12)
+        ax1.grid(True, alpha=0.3)
+        ax1.legend(loc='upper left')
+
+        # [패널 2] 투기 강도 (FOMO Detector)
+        ax2.plot(spec_index.index, spec_index, color='#FF9800', label='Speculation (TQQQ/QQQ Vol)', lw=1.2)
+        ax2.axhline(0.5, color='gray', linestyle='--', alpha=0.5) # 기준선
+        
+        # 🚨 경고: 과열 구간 (0.8 이상) -> 붉은색 채우기
+        ax2.fill_between(spec_index.index, spec_index, 0.8, 
+                         where=(spec_index >= 0.8), color='red', alpha=0.3, label='Overheated (FOMO)')
+        
+        ax2.set_title('2. Speculation Intensity (Retail FOMO)', fontweight='bold', fontsize=10)
+        ax2.set_ylabel('Ratio')
+        ax2.legend(loc='upper left', fontsize=8)
+        ax2.grid(True, alpha=0.3)
+
+        # [패널 3] 심리 비율 (Fear & Greed)
+        ax3.plot(sent_ratio.index, sent_ratio, color='#2196F3', label='Sentiment (TQQQ/SQQQ Vol)', lw=1.2)
+        ax3.axhline(1.0, color='gray', linestyle='--', alpha=0.5) # 균형점
+        
+        # 💎 기회: 극단적 공포 (0.5 이하) -> 초록색 채우기 (매수 기회)
+        ax3.fill_between(sent_ratio.index, sent_ratio, 0.5, 
+                         where=(sent_ratio <= 0.5), color='green', alpha=0.4, label='Capitulation (Buy)')
+        
+        # ⚠️ 위험: 극단적 탐욕 (2.0 이상) -> 붉은색 채우기 (매도 고려)
+        ax3.fill_between(sent_ratio.index, sent_ratio, 2.0, 
+                         where=(sent_ratio >= 2.0), color='red', alpha=0.2, label='Extreme Greed (Sell)')
+
+        ax3.set_title('3. Bulls vs Bears (TQQQ vs SQQQ Vol)', fontweight='bold', fontsize=10)
+        ax3.set_ylabel('Ratio')
+        ax3.legend(loc='upper left', fontsize=8)
+        ax3.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        return fig
+
+    except Exception as e:
+        print(f"Chart Error: {e}")
+        return None
 
 # === [Main] ===
 def main():
@@ -1181,6 +1253,11 @@ def main():
     st.markdown("---")
     st.subheader("📈 Technical Charts")
     st.pyplot(create_charts(data))
+
+    # [NEW] Leverage Sentiment Chart
+    st.markdown("---")
+    st.subheader("📊 Leverage Sentiment (FOMO & Panic)")
+    st.pyplot(create_leverage_sentiment_chart())
 
 if __name__ == "__main__":
     main()
