@@ -13,7 +13,7 @@ APP_PASSWORD = "1979"
 
 # === [Page Configuration] ===
 st.set_page_config(
-    page_title="HK Options Advisory (Grand Master v23.2 - McClellan Logic)",
+    page_title="HK Options Advisory (Grand Master v23.3 - Integrated Sentiment)",
     page_icon="🦅",
     layout="wide"
 )
@@ -44,7 +44,7 @@ def check_password():
 if not check_password():
     st.stop()
 
-# === [1] Data Collection & Processing (Optimized) ===
+# === [1] Data Collection & Processing (Optimized & Integrated) ===
 def fetch_ticker_data(ticker, period="2y"):
     """[Optimization] Helper function for individual ticker fetch"""
     try:
@@ -56,18 +56,24 @@ def fetch_ticker_data(ticker, period="2y"):
 
 @st.cache_data(ttl=1800)
 def get_market_data():
-    # [Optimization] Fetch all tickers including HYG/IEI in parallel
+    # [Optimization] Fetch all tickers including HYG/IEI & TQQQ/SQQQ in parallel
     tickers_to_fetch = [
         ("QQQ", "2y"), ("^ADD", "2y"), ("^VIX", "1y"), 
         ("^VVIX", "1y"), ("^SKEW", "1y"), ("^VIX3M", "1y"),
-        ("HYG", "2y"), ("IEI", "2y")
+        ("HYG", "2y"), ("IEI", "2y"),
+        ("TQQQ", "2y"), ("SQQQ", "2y") # [NEW] Added for Sentiment Logic
     ]
     
     results = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         future_to_ticker = {executor.submit(fetch_ticker_data, t, p): t for t, p in tickers_to_fetch}
         for future in concurrent.futures.as_completed(future_to_ticker):
             ticker, t_obj, hist = future.result()
+            
+            # [CRITICAL] Timezone Normalization for Alignment
+            if not hist.empty:
+                hist.index = hist.index.tz_localize(None).normalize()
+                
             results[ticker] = {'obj': t_obj, 'hist': hist}
 
     # 1. Process QQQ Data
@@ -106,39 +112,39 @@ def get_market_data():
     
     hist['Vol_MA20'] = hist['Volume'].rolling(window=20).mean()
 
-    # [MODIFIED] Process McClellan Oscillator (Instead of ADL BB)
+    # [NEW] Integrated Leverage Sentiment Logic (TQQQ/SQQQ)
+    # Reindex to ensure alignment with QQQ index
+    t_vol = results['TQQQ']['hist']['Volume'].reindex(hist.index).fillna(0)
+    s_vol = results['SQQQ']['hist']['Volume'].reindex(hist.index).fillna(0)
+    
+    # 5-Day Smoothing to reduce noise
+    hist['Spec_Index'] = (t_vol / hist['Volume']).rolling(window=5).mean() # TQQQ / QQQ
+    hist['Sent_Ratio'] = (t_vol / s_vol).rolling(window=5).mean() # TQQQ / SQQQ
+
+    # Process McClellan Oscillator
     add_hist = results["^ADD"]['hist']
     if not add_hist.empty and len(add_hist) > 10:
-        hist.index = hist.index.tz_localize(None).normalize()
-        add_hist.index = add_hist.index.tz_localize(None).normalize()
-        
         hist = hist.join(add_hist['Close'].rename('Net_Issues'), how='left')
         hist['Net_Issues'] = hist['Net_Issues'].ffill().fillna(0)
     else:
-        # Fallback Logic (Using Price Change for Net Issues approx)
+        # Fallback Logic
         print("⚠️ ADL Fetch Failed (^ADD) - Using Fallback")
-        hist['Net_Issues'] = np.where(hist['Close'] > hist['Close'].shift(1), 1000, -1000) # Scale up for visibility
+        hist['Net_Issues'] = np.where(hist['Close'] > hist['Close'].shift(1), 1000, -1000) 
         hist['Net_Issues'].iloc[0] = 0
     
-    # McClellan Oscillator Calculation
-    # Formula: EMA_19(Net Issues) - EMA_39(Net Issues)
+    # McClellan Calculation
     hist['EMA_19'] = hist['Net_Issues'].ewm(span=19, adjust=False).mean()
     hist['EMA_39'] = hist['Net_Issues'].ewm(span=39, adjust=False).mean()
     hist['McClellan'] = hist['EMA_19'] - hist['EMA_39']
     
-    # [NEW] Process HYG & IEI Data
+    # Process HYG & IEI Data
     hyg_hist = results["HYG"]['hist'].copy()
     iei_hist = results["IEI"]['hist'].copy()
     hyg_iei_ratio = pd.DataFrame()
 
     if not hyg_hist.empty and not iei_hist.empty:
-        hyg_hist.index = hyg_hist.index.tz_localize(None).normalize()
-        iei_hist.index = iei_hist.index.tz_localize(None).normalize()
-        
-        # Inner join on index to align dates
         combined = pd.merge(hyg_hist[['Close']], iei_hist[['Close']], left_index=True, right_index=True, suffixes=('_HYG', '_IEI'))
         combined['Ratio'] = combined['Close_HYG'] / combined['Close_IEI']
-        # [MODIFIED] 18MA for Ratio
         combined['Ratio_MA18'] = combined['Ratio'].rolling(window=18).mean()
         hyg_iei_ratio = combined
 
@@ -158,9 +164,6 @@ def get_market_data():
             df_vix = vix_hist[['Close']].copy()
             df_vix3m = vix3m_hist[['Close']].copy()
             
-            df_vix.index = df_vix.index.tz_localize(None).normalize()
-            df_vix3m.index = df_vix3m.index.tz_localize(None).normalize()
-            
             merged_df = pd.merge(
                 df_vix, 
                 df_vix3m, 
@@ -175,19 +178,6 @@ def get_market_data():
     except Exception as e:
         print(f"Error fetching VIX/VIX3M: {e}")
     
-    try:
-        if not vvix_hist.empty:
-            vvix_hist.index = vvix_hist.index.tz_localize(None).normalize()
-    except Exception as e:
-        print(f"Error processing VVIX: {e}")
-        
-    # Process SKEW (Ensure Timezone compatibility)
-    try:
-        if not skew_hist.empty:
-            skew_hist.index = skew_hist.index.tz_localize(None).normalize()
-    except Exception as e:
-        print(f"Error processing SKEW: {e}")
-
     curr = hist.iloc[-1]
     prev = hist.iloc[-2]
     curr_vix = vix_hist['Close'].iloc[-1]
@@ -215,7 +205,7 @@ def get_market_data():
         'vix': curr_vix, 'vix_prev': prev_vix,
         'vix3m': vix3m_val,
         'iv': current_iv,
-        'mcclellan': hist['McClellan'].iloc[-1], # Changed from adl_z
+        'mcclellan': hist['McClellan'].iloc[-1], 
         'hist': hist, 'vix_hist': vix_hist, 'vix3m_hist': vix3m_hist, 'vvix_hist': vvix_hist,
         'skew_hist': skew_hist,
         'vix_term_df': vix_term_df,
@@ -273,15 +263,13 @@ def detect_vvix_trap(data, log):
     log['vvix_trap'] = 'none'
     return 0
 
-# [MODIFIED] Logic for "Forest & Tree" (McClellan + RSI2)
 def analyze_adl_rsi2_strategy(data, log):
-    mcclellan = data['mcclellan'] # Use McClellan instead of Z-score
+    mcclellan = data['mcclellan'] 
     rsi2 = data['rsi2']
     pts = 0
     state = 'neutral'
     
-    # 1. Negative Width Penalty (Forest is dying)
-    # McClellan < 0 means more selling volume/issues on average
+    # 1. Negative Width Penalty
     if mcclellan < 0:
         pts += -5
         log['adl_neg_penalty'] = True
@@ -492,7 +480,6 @@ def analyze_expert_logic(d):
     pts_vvix = detect_vvix_trap(d, log)
     score += pts_vvix
     
-    # [MODIFIED] Replaced logic using McClellan Oscillator
     pts_forest = analyze_adl_rsi2_strategy(d, log)
     score += pts_forest
 
@@ -636,7 +623,7 @@ def find_best_option(price, iv, target_delta, strategy_type):
         print(f"Option Search Error: {e}")
         return None
 
-# === [6] Charts (Optimized Rendering) ===
+# === [6] Charts (Integrated Logic) ===
 def create_charts(data):
     hist = data['hist'].copy()
     
@@ -657,9 +644,9 @@ def create_charts(data):
         'SPRING': '#C8E6C9'             
     }
     
-    fig = plt.figure(figsize=(10, 36))
-    
-    gs = fig.add_gridspec(12, 1, height_ratios=[2, 0.6, 1.5, 1.2, 1, 1, 1, 1, 1, 1, 1, 1.5])
+    # [LAYOUT] Added 2 more rows for Sentiment
+    fig = plt.figure(figsize=(10, 42))
+    gs = fig.add_gridspec(14, 1, height_ratios=[2, 0.6, 1.5, 1.2, 1, 1, 1, 1, 1, 1, 1, 1.5, 1, 1])
     
     ax1 = fig.add_subplot(gs[0])
     ax_vol = fig.add_subplot(gs[1], sharex=ax1)
@@ -674,7 +661,11 @@ def create_charts(data):
     ax2 = fig.add_subplot(gs[8], sharex=ax1)
     ax_ratio_vvix = fig.add_subplot(gs[9], sharex=ax1)
     ax_rsi2 = fig.add_subplot(gs[10], sharex=ax1)
-    ax_mcclellan = fig.add_subplot(gs[11], sharex=ax1) # [MODIFIED] McClellan
+    ax_mcclellan = fig.add_subplot(gs[11], sharex=ax1)
+    
+    # [NEW Axes]
+    ax_spec = fig.add_subplot(gs[12], sharex=ax1) # Speculation Index
+    ax_sent = fig.add_subplot(gs[13], sharex=ax1) # Sentiment Ratio
 
     # 1. Price Chart
     ax1.plot(hist.index, hist['Close'], label='QQQ', color='black', alpha=0.9, zorder=2)
@@ -851,7 +842,7 @@ def create_charts(data):
     ax_rsi2.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_rsi2.get_xticklabels(), visible=False)
 
-    # 12. [MODIFIED] McClellan Oscillator
+    # 12. McClellan Oscillator
     mc_data = hist['McClellan']
     
     # Bar colors based on value (>0 Green, <0 Red)
@@ -871,11 +862,41 @@ def create_charts(data):
     ax_mcclellan.set_title('McClellan Oscillator (EMA19 - EMA39 of Net Issues)', fontsize=12, fontweight='bold')
     ax_mcclellan.legend(loc='upper left', fontsize=8)
     ax_mcclellan.grid(True, alpha=0.3)
-    ax_mcclellan.set_xlabel('Date')
+    plt.setp(ax_mcclellan.get_xticklabels(), visible=False)
+
+    # === [NEW] 13. Speculation Index (TQQQ/QQQ) ===
+    spec = hist['Spec_Index']
+    ax_spec.plot(hist.index, spec, color='#FF9800', lw=1.2, label='Speculation (TQQQ/QQQ)', zorder=2)
+    ax_spec.axhline(0.8, color='red', ls=':', label='FOMO Warning (0.8)', zorder=2)
+    ax_spec.fill_between(hist.index, spec, 0.8, where=(spec >= 0.8), color='red', alpha=0.3, zorder=1)
+    
+    curr_spec = spec.iloc[-1]
+    ax_spec.text(hist.index[-1], curr_spec, f"{curr_spec:.2f}", color='orange', fontweight='bold')
+    ax_spec.set_title('Retail FOMO Index (TQQQ vs QQQ Volume)', fontsize=12, fontweight='bold')
+    ax_spec.legend(loc='upper left', fontsize=8)
+    ax_spec.grid(True, alpha=0.3)
+    plt.setp(ax_spec.get_xticklabels(), visible=False)
+
+    # === [NEW] 14. Sentiment Ratio (TQQQ/SQQQ) ===
+    sent = hist['Sent_Ratio']
+    ax_sent.plot(hist.index, sent, color='#2196F3', lw=1.2, label='Bulls vs Bears (TQQQ/SQQQ)', zorder=2)
+    ax_sent.axhline(1.0, color='gray', ls='--', lw=1, zorder=2)
+    
+    # Color zones
+    ax_sent.fill_between(hist.index, sent, 0.5, where=(sent <= 0.5), color='green', alpha=0.3, label='Capitulation (<0.5)', zorder=1)
+    ax_sent.fill_between(hist.index, sent, 2.0, where=(sent >= 2.0), color='red', alpha=0.3, label='Extreme Greed (>2.0)', zorder=1)
+
+    curr_sent = sent.iloc[-1]
+    sent_color = 'green' if curr_sent < 0.8 else 'red' if curr_sent > 1.5 else 'black'
+    ax_sent.text(hist.index[-1], curr_sent, f"{curr_sent:.2f}", color=sent_color, fontweight='bold')
+
+    ax_sent.set_title('Sentiment Ratio (Bull Vol / Bear Vol)', fontsize=12, fontweight='bold')
+    ax_sent.legend(loc='upper left', fontsize=8)
+    ax_sent.grid(True, alpha=0.3)
 
     # === [Background Coloring] ===
-    # Apply to all axes including ax_mcclellan
-    all_axes = [ax1, ax_vol, ax_trend, ax_hyg_ratio, ax_skew, ax_vix_abs, ax_ratio, ax_rsi, ax2, ax_ratio_vvix, ax_rsi2, ax_mcclellan]
+    # Apply to all axes including NEW ones
+    all_axes = [ax1, ax_vol, ax_trend, ax_hyg_ratio, ax_skew, ax_vix_abs, ax_ratio, ax_rsi, ax2, ax_ratio_vvix, ax_rsi2, ax_mcclellan, ax_spec, ax_sent]
     
     for ax in all_axes:
         trans = ax.get_xaxis_transform()
@@ -887,82 +908,10 @@ def create_charts(data):
     plt.tight_layout()
     return fig
 
-# === [NEW] Leverage Sentiment Chart Function ===
-def create_leverage_sentiment_chart():
-    """
-    TQQQ/SQQQ 거래량을 분석하여 시장의 투기 강도(FOMO)와 공포 심리를 시각화합니다.
-    """
-    try:
-        # 1. 데이터 수집 (최근 1년 데이터)
-        df = yf.download(['QQQ', 'TQQQ', 'SQQQ'], period='1y', progress=False)
-        
-        # 2. 데이터 전처리 (yfinance 최신/구버전 호환 처리)
-        if isinstance(df.columns, pd.MultiIndex):
-            vol = df['Volume']
-            close = df['Close']
-        else:
-            # 단일 레벨 컬럼인 경우 (구버전)
-            vol = df[['QQQ', 'TQQQ', 'SQQQ']] 
-            close = df[['QQQ', 'TQQQ', 'SQQQ']]
-
-        # 3. 지표 계산 (5일 이동평균으로 노이즈 제거)
-        # [지표 A] 투기 강도 (Speculation Index)
-        spec_index = (vol['TQQQ'] / vol['QQQ']).rolling(window=5).mean()
-
-        # [지표 B] 공포/탐욕 비율 (Sentiment Ratio)
-        sent_ratio = (vol['TQQQ'] / vol['SQQQ']).rolling(window=5).mean()
-
-        # 4. 그래프 그리기 (3단 구성)
-        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 12), sharex=True, 
-                                          gridspec_kw={'height_ratios': [2, 1, 1]})
-
-        # [패널 1] QQQ 가격
-        ax1.plot(close.index, close['QQQ'], color='black', label='QQQ Price', lw=1.5)
-        ax1.set_title('1. QQQ Price Trend', fontweight='bold', fontsize=12)
-        ax1.grid(True, alpha=0.3)
-        ax1.legend(loc='upper left')
-
-        # [패널 2] 투기 강도 (FOMO Detector)
-        ax2.plot(spec_index.index, spec_index, color='#FF9800', label='Speculation (TQQQ/QQQ Vol)', lw=1.2)
-        ax2.axhline(0.5, color='gray', linestyle='--', alpha=0.5) # 기준선
-        
-        # 🚨 경고: 과열 구간 (0.8 이상) -> 붉은색 채우기
-        ax2.fill_between(spec_index.index, spec_index, 0.8, 
-                         where=(spec_index >= 0.8), color='red', alpha=0.3, label='Overheated (FOMO)')
-        
-        ax2.set_title('2. Speculation Intensity (Retail FOMO)', fontweight='bold', fontsize=10)
-        ax2.set_ylabel('Ratio')
-        ax2.legend(loc='upper left', fontsize=8)
-        ax2.grid(True, alpha=0.3)
-
-        # [패널 3] 심리 비율 (Fear & Greed)
-        ax3.plot(sent_ratio.index, sent_ratio, color='#2196F3', label='Sentiment (TQQQ/SQQQ Vol)', lw=1.2)
-        ax3.axhline(1.0, color='gray', linestyle='--', alpha=0.5) # 균형점
-        
-        # 💎 기회: 극단적 공포 (0.5 이하) -> 초록색 채우기 (매수 기회)
-        ax3.fill_between(sent_ratio.index, sent_ratio, 0.5, 
-                         where=(sent_ratio <= 0.5), color='green', alpha=0.4, label='Capitulation (Buy)')
-        
-        # ⚠️ 위험: 극단적 탐욕 (2.0 이상) -> 붉은색 채우기 (매도 고려)
-        ax3.fill_between(sent_ratio.index, sent_ratio, 2.0, 
-                         where=(sent_ratio >= 2.0), color='red', alpha=0.2, label='Extreme Greed (Sell)')
-
-        ax3.set_title('3. Bulls vs Bears (TQQQ vs SQQQ Vol)', fontweight='bold', fontsize=10)
-        ax3.set_ylabel('Ratio')
-        ax3.legend(loc='upper left', fontsize=8)
-        ax3.grid(True, alpha=0.3)
-
-        plt.tight_layout()
-        return fig
-
-    except Exception as e:
-        print(f"Chart Error: {e}")
-        return None
-
 # === [Main] ===
 def main():
-    st.title("🦅 HK Options Advisory (Grand Master v23.2 - McClellan Logic)")
-    st.caption(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Logic: MACD 4-Zone + SKEW + McClellan(Forest)")
+    st.title("🦅 HK Options Advisory (Grand Master v23.3 - Integrated Sentiment)")
+    st.caption(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Logic: MACD 4-Zone + SKEW + McClellan + TQQQ Sentiment")
 
     with st.spinner('Analyzing Market Structure...'):
         try:
@@ -1016,7 +965,7 @@ def main():
     if log.get('vvix_trap') == 'detected': st.sidebar.error("VVIX Trap: ⚠️ DETECTED")
     else: st.sidebar.success("VVIX Trap: ✅ None")
     
-    # [SIDEBAR] McClellan (Replaced ADL Z)
+    # McClellan
     st.sidebar.markdown("---")
     mc_val = data.get('mcclellan', 0)
     st.sidebar.metric("McClellan Osc", f"{mc_val:.1f}")
@@ -1077,8 +1026,6 @@ def main():
     st.markdown("".join(html_season_list), unsafe_allow_html=True)
 
     # 2. Scorecard
-    
-    # Helper for boolean flags in table
     adl_neg_match = log.get('adl_neg_penalty', False)
     ft_state_match = log.get('forest_tree_state', 'neutral')
     
@@ -1140,12 +1087,12 @@ def main():
         f"<tr><td {td_style}>🚀 Escape</td>",
         f"<td {hl_score('rsi', 'escape', 'SUMMER')}>3~5</td><td {hl_score('rsi', 'escape', 'AUTUMN')}>3~5</td><td {hl_score('rsi', 'escape', 'WINTER')}>3~5</td><td {hl_score('rsi', 'escape', 'SPRING')}>3~5</td></tr>",
         
-        # 5. [MODIFIED] McClellan Penalty
+        # 5. McClellan Penalty
         f"<tr><td {td_style}><b>Forest Check</b></td>",
         f"<td {td_style}>McClellan < 0</td>",
         f"<td colspan='4' {hl_bool(adl_neg_match)}><b style='color:red;'>-5</b></td></tr>",
 
-        # 6. [MODIFIED] Forest & Tree Strategy
+        # 6. Forest & Tree Strategy
         f"<tr><td rowspan='4' {td_style}><b>Forest & Tree</b><br><span style='font-size:10px;'>(Mc+RSI2)</span></td>",
         f"<td {td_style}>Strong Buy<br>(Mc&gt;0, R2&lt;10)</td>",
         f"<td colspan='4' {hl_ft('strong_buy')}><b style='color:green;'>+5</b></td></tr>",
@@ -1200,64 +1147,3 @@ def main():
         "</table>"
     ]
     st.markdown("".join(html_score_list), unsafe_allow_html=True)
-
-    # 3. Final Verdict
-    def get_matrix_style(current_id, row_id, bg_color):
-        if current_id == row_id:
-            return f"style='background-color: {bg_color}; border: 3px solid #666; font-weight: bold; color: #333; height: 50px;'"
-        else:
-            return "style='background-color: white; border: 1px solid #eee; color: #999;'"
-            
-    strat_display = f"""
-    <div style='background-color:#f1f8e9; padding:15px; border-left:5px solid #4caf50; margin-bottom:15px;'>
-        <div style='font-size:18px; font-weight:bold; color:#2e7d32;'>🔔 Recommended Strategy: {strat_type if strat_type else '-'}</div>
-        <div style='font-size:14px; color:#555; margin-top:5px;'>💡 <b>Basis:</b> {strat_basis if strat_basis else '-'}</div>
-    </div>
-    """
-
-    html_verdict_list = [
-        f"<h3>3. Final Verdict: <span style='color:white;'>{score} Pts</span> - Dynamic Exit Matrix</h3>",
-        strat_display,
-        "<div style='border: 2px solid #ccc; border-radius: 10px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.1);'>",
-        "<table style='border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; text-align: center;'>",
-        f"<tr style='background-color: #333; color: white;'>",
-        f"<th {th_style} style='color:white;'>Score Range</th>",
-        f"<th {th_style} style='color:white;'>Verdict</th>",
-        f"<th {th_style} style='color:white;'>🎯 Target</th>",
-        f"<th {th_style} style='color:white;'>🛑 Stop Loss</th>",
-        "</tr>",
-        
-        f"<tr {get_matrix_style(matrix_id, 'panic', '#ffebee')}>",
-        "<td>System Collapse / Black Swan</td><td>⛔ Trading Halted (Panic)</td><td>-</td><td>-</td></tr>",
-        
-        f"<tr {get_matrix_style(matrix_id, 'super_strong', '#c8e6c9')}>",
-        "<td>20+ (with Signals)</td><td>💎💎 Super Strong</td><td style='color:green;'>+100%</td><td style='color:red;'>-300%</td></tr>",
-        
-        f"<tr {get_matrix_style(matrix_id, 'strong', '#dff0d8')}>",
-        "<td>12 ~ 19</td><td>💎 Strong</td><td style='color:green;'>+75%</td><td style='color:red;'>-300%</td></tr>",
-        
-        f"<tr {get_matrix_style(matrix_id, 'standard', '#ffffff')}>",
-        "<td>8 ~ 11</td><td>✅ Standard</td><td style='color:green;'>+50%</td><td style='color:red;'>-200%</td></tr>",
-        
-        f"<tr {get_matrix_style(matrix_id, 'weak', '#fff9c4')}>",
-        "<td>5 ~ 7</td><td>⚠️ Hit & Run</td><td style='color:green;'>+30%</td><td style='color:red;'>-150%</td></tr>",
-        
-        f"<tr {get_matrix_style(matrix_id, 'no_entry', '#f2dede')}>",
-        "<td>< 5</td><td>🛡️ No Entry</td><td>-</td><td>-</td></tr>",
-        
-        "</table>",
-        "</div>"
-    ]
-    st.markdown("".join(html_verdict_list), unsafe_allow_html=True)
-
-    st.markdown("---")
-    st.subheader("📈 Technical Charts")
-    st.pyplot(create_charts(data))
-
-    # [NEW] Leverage Sentiment Chart
-    st.markdown("---")
-    st.subheader("📊 Leverage Sentiment (FOMO & Panic)")
-    st.pyplot(create_leverage_sentiment_chart())
-
-if __name__ == "__main__":
-    main()
