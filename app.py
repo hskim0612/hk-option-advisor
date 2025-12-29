@@ -8,9 +8,6 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import concurrent.futures # [Optimization] Parallel processing module
 
-# === [App Security] ===
-APP_PASSWORD = "1979"
-
 # === [Page Configuration] ===
 st.set_page_config(
     page_title="HK Options Advisory (Grand Master v23.2 - McClellan Logic)",
@@ -21,28 +18,6 @@ st.set_page_config(
 # Chart Style
 plt.style.use('seaborn-v0_8-darkgrid')
 plt.rcParams['font.family'] = 'sans-serif'
-
-# === [0] Login Screen ===
-def check_password():
-    if "password_correct" not in st.session_state:
-        st.session_state.password_correct = False
-
-    if st.session_state.password_correct:
-        return True
-
-    st.title("🔒 HK Advisory Secure Access")
-    password = st.text_input("Enter Password", type="password")
-    
-    if st.button("Login"):
-        if password == APP_PASSWORD:
-            st.session_state.password_correct = True
-            st.rerun()
-        else:
-            st.error("Incorrect Password")
-    return False
-
-if not check_password():
-    st.stop()
 
 # === [1] Data Collection & Processing (Optimized) ===
 def fetch_ticker_data(ticker, period="2y"):
