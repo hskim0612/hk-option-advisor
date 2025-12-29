@@ -10,7 +10,7 @@ import concurrent.futures # [Optimization] Parallel processing module
 
 # === [Page Configuration] ===
 st.set_page_config(
-    page_title="HK Options Advisory (Grand Master v23.2 - McClellan Logic)",
+    page_title="HK Options Advisory (Grand Master v23.3 - Integrated Logic)",
     page_icon="🦅",
     layout="wide"
 )
@@ -31,15 +31,16 @@ def fetch_ticker_data(ticker, period="2y"):
 
 @st.cache_data(ttl=1800)
 def get_market_data():
-    # [Optimization] Fetch all tickers including HYG/IEI in parallel
+    # [Optimization] Fetch all tickers including HYG/IEI, TQQQ/SQQQ in parallel
     tickers_to_fetch = [
         ("QQQ", "2y"), ("^ADD", "2y"), ("^VIX", "1y"), 
         ("^VVIX", "1y"), ("^SKEW", "1y"), ("^VIX3M", "1y"),
-        ("HYG", "2y"), ("IEI", "2y")
+        ("HYG", "2y"), ("IEI", "2y"),
+        ("TQQQ", "2y"), ("SQQQ", "2y") # [NEW] Added for Sentiment Chart synchronization
     ]
     
     results = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
         future_to_ticker = {executor.submit(fetch_ticker_data, t, p): t for t, p in tickers_to_fetch}
         for future in concurrent.futures.as_completed(future_to_ticker):
             ticker, t_obj, hist = future.result()
@@ -81,7 +82,7 @@ def get_market_data():
     
     hist['Vol_MA20'] = hist['Volume'].rolling(window=20).mean()
 
-    # [MODIFIED] Process McClellan Oscillator (Instead of ADL BB)
+    # Process McClellan Oscillator (Instead of ADL BB)
     add_hist = results["^ADD"]['hist']
     if not add_hist.empty and len(add_hist) > 10:
         hist.index = hist.index.tz_localize(None).normalize()
@@ -90,18 +91,17 @@ def get_market_data():
         hist = hist.join(add_hist['Close'].rename('Net_Issues'), how='left')
         hist['Net_Issues'] = hist['Net_Issues'].ffill().fillna(0)
     else:
-        # Fallback Logic (Using Price Change for Net Issues approx)
+        # Fallback Logic
         print("⚠️ ADL Fetch Failed (^ADD) - Using Fallback")
-        hist['Net_Issues'] = np.where(hist['Close'] > hist['Close'].shift(1), 1000, -1000) # Scale up for visibility
+        hist['Net_Issues'] = np.where(hist['Close'] > hist['Close'].shift(1), 1000, -1000)
         hist['Net_Issues'].iloc[0] = 0
     
     # McClellan Oscillator Calculation
-    # Formula: EMA_19(Net Issues) - EMA_39(Net Issues)
     hist['EMA_19'] = hist['Net_Issues'].ewm(span=19, adjust=False).mean()
     hist['EMA_39'] = hist['Net_Issues'].ewm(span=39, adjust=False).mean()
     hist['McClellan'] = hist['EMA_19'] - hist['EMA_39']
     
-    # [NEW] Process HYG & IEI Data
+    # Process HYG & IEI Data
     hyg_hist = results["HYG"]['hist'].copy()
     iei_hist = results["IEI"]['hist'].copy()
     hyg_iei_ratio = pd.DataFrame()
@@ -110,10 +110,8 @@ def get_market_data():
         hyg_hist.index = hyg_hist.index.tz_localize(None).normalize()
         iei_hist.index = iei_hist.index.tz_localize(None).normalize()
         
-        # Inner join on index to align dates
         combined = pd.merge(hyg_hist[['Close']], iei_hist[['Close']], left_index=True, right_index=True, suffixes=('_HYG', '_IEI'))
         combined['Ratio'] = combined['Close_HYG'] / combined['Close_IEI']
-        # [MODIFIED] 18MA for Ratio
         combined['Ratio_MA18'] = combined['Ratio'].rolling(window=18).mean()
         hyg_iei_ratio = combined
 
@@ -156,7 +154,6 @@ def get_market_data():
     except Exception as e:
         print(f"Error processing VVIX: {e}")
         
-    # Process SKEW (Ensure Timezone compatibility)
     try:
         if not skew_hist.empty:
             skew_hist.index = skew_hist.index.tz_localize(None).normalize()
@@ -190,11 +187,13 @@ def get_market_data():
         'vix': curr_vix, 'vix_prev': prev_vix,
         'vix3m': vix3m_val,
         'iv': current_iv,
-        'mcclellan': hist['McClellan'].iloc[-1], # Changed from adl_z
+        'mcclellan': hist['McClellan'].iloc[-1],
         'hist': hist, 'vix_hist': vix_hist, 'vix3m_hist': vix3m_hist, 'vvix_hist': vvix_hist,
         'skew_hist': skew_hist,
         'vix_term_df': vix_term_df,
-        'hyg_iei_ratio': hyg_iei_ratio
+        'hyg_iei_ratio': hyg_iei_ratio,
+        'tqqq_hist': results["TQQQ"]['hist'], # Added for Sentiment Chart
+        'sqqq_hist': results["SQQQ"]['hist']  # Added for Sentiment Chart
     }
 
 # === [2] Advanced Logic Functions ===
@@ -248,15 +247,13 @@ def detect_vvix_trap(data, log):
     log['vvix_trap'] = 'none'
     return 0
 
-# [MODIFIED] Logic for "Forest & Tree" (McClellan + RSI2)
 def analyze_adl_rsi2_strategy(data, log):
-    mcclellan = data['mcclellan'] # Use McClellan instead of Z-score
+    mcclellan = data['mcclellan'] 
     rsi2 = data['rsi2']
     pts = 0
     state = 'neutral'
     
-    # 1. Negative Width Penalty (Forest is dying)
-    # McClellan < 0 means more selling volume/issues on average
+    # 1. Negative Width Penalty
     if mcclellan < 0:
         pts += -5
         log['adl_neg_penalty'] = True
@@ -266,7 +263,7 @@ def analyze_adl_rsi2_strategy(data, log):
     # 2. Forest & Tree Strategy
     strategy_pts = 0
     
-    if mcclellan > 0: # Forest is growing (Money Inflow)
+    if mcclellan > 0: 
         if rsi2 < 10: 
             strategy_pts = 5
             state = 'strong_buy'
@@ -274,7 +271,7 @@ def analyze_adl_rsi2_strategy(data, log):
             strategy_pts = 2
             state = 'buy'
             
-    elif mcclellan < 0: # Forest is dying (Money Outflow)
+    elif mcclellan < 0: 
         if rsi2 > 90:
             strategy_pts = -5
             state = 'strong_sell'
@@ -446,7 +443,7 @@ def analyze_expert_logic(d):
         
         if curr_skew >= 155:
             score += -15
-            log['skew'] = 'black_swan'  # Kill Switch Trigger
+            log['skew'] = 'black_swan' 
         elif 145 <= curr_skew < 155:
             score += -3
             log['skew'] = 'high_risk'
@@ -467,7 +464,6 @@ def analyze_expert_logic(d):
     pts_vvix = detect_vvix_trap(d, log)
     score += pts_vvix
     
-    # [MODIFIED] Replaced logic using McClellan Oscillator
     pts_forest = analyze_adl_rsi2_strategy(d, log)
     score += pts_forest
 
@@ -649,7 +645,7 @@ def create_charts(data):
     ax2 = fig.add_subplot(gs[8], sharex=ax1)
     ax_ratio_vvix = fig.add_subplot(gs[9], sharex=ax1)
     ax_rsi2 = fig.add_subplot(gs[10], sharex=ax1)
-    ax_mcclellan = fig.add_subplot(gs[11], sharex=ax1) # [MODIFIED] McClellan
+    ax_mcclellan = fig.add_subplot(gs[11], sharex=ax1)
 
     # 1. Price Chart
     ax1.plot(hist.index, hist['Close'], label='QQQ', color='black', alpha=0.9, zorder=2)
@@ -826,7 +822,7 @@ def create_charts(data):
     ax_rsi2.grid(True, alpha=0.3, zorder=1)
     plt.setp(ax_rsi2.get_xticklabels(), visible=False)
 
-    # 12. [MODIFIED] McClellan Oscillator
+    # 12. McClellan Oscillator
     mc_data = hist['McClellan']
     
     # Bar colors based on value (>0 Green, <0 Red)
@@ -862,70 +858,75 @@ def create_charts(data):
     plt.tight_layout()
     return fig
 
-# === [NEW] Leverage Sentiment Chart Function ===
-def create_leverage_sentiment_chart():
+# === [NEW] Leverage Sentiment Chart Function (Revised) ===
+def create_leverage_sentiment_chart(data):
     """
-    TQQQ/SQQQ 거래량을 분석하여 시장의 투기 강도(FOMO)와 공포 심리를 시각화합니다.
+    [Optimization] Uses pre-fetched data from get_market_data() 
+    to ensure X-axis alignment and removed redundant QQQ Price plot.
     """
     try:
-        # 1. 데이터 수집 (최근 1년 데이터)
-        df = yf.download(['QQQ', 'TQQQ', 'SQQQ'], period='1y', progress=False)
+        # 1. Use Data from Main Dictionary (Already 2y period & Aligned)
+        hist = data['hist']
+        tqqq = data['tqqq_hist']
+        sqqq = data['sqqq_hist']
         
-        # 2. 데이터 전처리 (yfinance 최신/구버전 호환 처리)
-        if isinstance(df.columns, pd.MultiIndex):
-            vol = df['Volume']
-            close = df['Close']
-        else:
-            # 단일 레벨 컬럼인 경우 (구버전)
-            vol = df[['QQQ', 'TQQQ', 'SQQQ']] 
-            close = df[['QQQ', 'TQQQ', 'SQQQ']]
+        # 2. Align Data via DataFrame (Inner Join on Index)
+        # Ensure timezone neutrality
+        for d in [hist, tqqq, sqqq]:
+            if not d.empty:
+                d.index = d.index.tz_localize(None).normalize()
 
-        # 3. 지표 계산 (5일 이동평균으로 노이즈 제거)
-        # [지표 A] 투기 강도 (Speculation Index)
-        spec_index = (vol['TQQQ'] / vol['QQQ']).rolling(window=5).mean()
-
-        # [지표 B] 공포/탐욕 비율 (Sentiment Ratio)
-        sent_ratio = (vol['TQQQ'] / vol['SQQQ']).rolling(window=5).mean()
-
-        # 4. 그래프 그리기 (3단 구성)
-        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 12), sharex=True, 
-                                          gridspec_kw={'height_ratios': [2, 1, 1]})
-
-        # [패널 1] QQQ 가격
-        ax1.plot(close.index, close['QQQ'], color='black', label='QQQ Price', lw=1.5)
-        ax1.set_title('1. QQQ Price Trend', fontweight='bold', fontsize=12)
-        ax1.grid(True, alpha=0.3)
-        ax1.legend(loc='upper left')
-
-        # [패널 2] 투기 강도 (FOMO Detector)
-        ax2.plot(spec_index.index, spec_index, color='#FF9800', label='Speculation (TQQQ/QQQ Vol)', lw=1.2)
-        ax2.axhline(0.5, color='gray', linestyle='--', alpha=0.5) # 기준선
+        df = pd.DataFrame({
+            'QQQ_Vol': hist['Volume'],
+            'TQQQ_Vol': tqqq['Volume'],
+            'SQQQ_Vol': sqqq['Volume']
+        }).dropna()
         
-        # 🚨 경고: 과열 구간 (0.8 이상) -> 붉은색 채우기
-        ax2.fill_between(spec_index.index, spec_index, 0.8, 
+        # 3. Calculate Indicators (5-day Smoothing)
+        # [Index A] Speculation Intensity
+        spec_index = (df['TQQQ_Vol'] / df['QQQ_Vol']).rolling(window=5).mean()
+        
+        # [Index B] Fear/Greed Ratio
+        sent_ratio = (df['TQQQ_Vol'] / df['SQQQ_Vol']).rolling(window=5).mean()
+        
+        # 4. Create Plots (2 Rows only - Removed Redundant Price Chart)
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+
+        # [Panel 1] Speculation Intensity (FOMO Detector)
+        ax1.plot(spec_index.index, spec_index, color='#FF9800', label='Speculation (TQQQ/QQQ Vol)', lw=1.2)
+        ax1.axhline(0.5, color='gray', linestyle='--', alpha=0.5) 
+        
+        # Warn: Overheated (>= 0.8)
+        ax1.fill_between(spec_index.index, spec_index, 0.8, 
                          where=(spec_index >= 0.8), color='red', alpha=0.3, label='Overheated (FOMO)')
         
-        ax2.set_title('2. Speculation Intensity (Retail FOMO)', fontweight='bold', fontsize=10)
-        ax2.set_ylabel('Ratio')
-        ax2.legend(loc='upper left', fontsize=8)
-        ax2.grid(True, alpha=0.3)
+        ax1.set_title('1. Speculation Intensity (Retail FOMO)', fontweight='bold', fontsize=12)
+        ax1.set_ylabel('Ratio')
+        ax1.legend(loc='upper left', fontsize=9)
+        ax1.grid(True, alpha=0.3)
 
-        # [패널 3] 심리 비율 (Fear & Greed)
-        ax3.plot(sent_ratio.index, sent_ratio, color='#2196F3', label='Sentiment (TQQQ/SQQQ Vol)', lw=1.2)
-        ax3.axhline(1.0, color='gray', linestyle='--', alpha=0.5) # 균형점
+        # [Panel 2] Bulls vs Bears (Fear & Greed)
+        ax2.plot(sent_ratio.index, sent_ratio, color='#2196F3', label='Sentiment (TQQQ/SQQQ Vol)', lw=1.2)
+        ax2.axhline(1.0, color='gray', linestyle='--', alpha=0.5) 
         
-        # 💎 기회: 극단적 공포 (0.5 이하) -> 초록색 채우기 (매수 기회)
-        ax3.fill_between(sent_ratio.index, sent_ratio, 0.5, 
+        # Opportunity: Extreme Fear (<= 0.5)
+        ax2.fill_between(sent_ratio.index, sent_ratio, 0.5, 
                          where=(sent_ratio <= 0.5), color='green', alpha=0.4, label='Capitulation (Buy)')
         
-        # ⚠️ 위험: 극단적 탐욕 (2.0 이상) -> 붉은색 채우기 (매도 고려)
-        ax3.fill_between(sent_ratio.index, sent_ratio, 2.0, 
+        # Danger: Extreme Greed (>= 2.0)
+        ax2.fill_between(sent_ratio.index, sent_ratio, 2.0, 
                          where=(sent_ratio >= 2.0), color='red', alpha=0.2, label='Extreme Greed (Sell)')
 
-        ax3.set_title('3. Bulls vs Bears (TQQQ vs SQQQ Vol)', fontweight='bold', fontsize=10)
-        ax3.set_ylabel('Ratio')
-        ax3.legend(loc='upper left', fontsize=8)
-        ax3.grid(True, alpha=0.3)
+        ax2.set_title('2. Bulls vs Bears (TQQQ vs SQQQ Vol)', fontweight='bold', fontsize=12)
+        ax2.set_ylabel('Ratio')
+        ax2.legend(loc='upper left', fontsize=9)
+        ax2.grid(True, alpha=0.3)
+        ax2.set_xlabel('Date')
+
+        # Limit X-axis to match the main chart's range (last 2 years effectively)
+        # This forces visual alignment with the main chart
+        if not spec_index.empty:
+            ax2.set_xlim(spec_index.index[0], spec_index.index[-1])
 
         plt.tight_layout()
         return fig
@@ -936,7 +937,7 @@ def create_leverage_sentiment_chart():
 
 # === [Main] ===
 def main():
-    st.title("🦅 HK Options Advisory (Grand Master v23.2 - McClellan Logic)")
+    st.title("🦅 HK Options Advisory (Grand Master v23.3 - Integrated Logic)")
     st.caption(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Logic: MACD 4-Zone + SKEW + McClellan(Forest)")
 
     with st.spinner('Analyzing Market Structure...'):
@@ -1115,12 +1116,12 @@ def main():
         f"<tr><td {td_style}>🚀 Escape</td>",
         f"<td {hl_score('rsi', 'escape', 'SUMMER')}>3~5</td><td {hl_score('rsi', 'escape', 'AUTUMN')}>3~5</td><td {hl_score('rsi', 'escape', 'WINTER')}>3~5</td><td {hl_score('rsi', 'escape', 'SPRING')}>3~5</td></tr>",
         
-        # 5. [MODIFIED] McClellan Penalty
+        # 5. McClellan Penalty
         f"<tr><td {td_style}><b>Forest Check</b></td>",
         f"<td {td_style}>McClellan < 0</td>",
         f"<td colspan='4' {hl_bool(adl_neg_match)}><b style='color:red;'>-5</b></td></tr>",
 
-        # 6. [MODIFIED] Forest & Tree Strategy
+        # 6. Forest & Tree Strategy
         f"<tr><td rowspan='4' {td_style}><b>Forest & Tree</b><br><span style='font-size:10px;'>(Mc+RSI2)</span></td>",
         f"<td {td_style}>Strong Buy<br>(Mc&gt;0, R2&lt;10)</td>",
         f"<td colspan='4' {hl_ft('strong_buy')}><b style='color:green;'>+5</b></td></tr>",
@@ -1229,10 +1230,10 @@ def main():
     st.subheader("📈 Technical Charts")
     st.pyplot(create_charts(data))
 
-    # [NEW] Leverage Sentiment Chart
+    # [NEW] Leverage Sentiment Chart (Optimized)
     st.markdown("---")
     st.subheader("📊 Leverage Sentiment (FOMO & Panic)")
-    st.pyplot(create_leverage_sentiment_chart())
+    st.pyplot(create_leverage_sentiment_chart(data))
 
 if __name__ == "__main__":
     main()
