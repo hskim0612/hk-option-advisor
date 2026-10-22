@@ -151,21 +151,38 @@ def get_market_data():
         hist = hist.join(add_hist['Close'].rename('Net_Issues'), how='left')
         hist['Net_Issues'] = hist['Net_Issues'].ffill().fillna(0)
     else:
-        net = get_breadth_series()
-        if net is not None and len(net) > 60:
+        nyse_csv = os.environ.get('MCC_NYSE_BREADTH', r'G:\My Drive\Tools\Orca\McClellanNYSE\breadth.csv')
+        nyse_net = None
+        try:
+            if os.path.exists(nyse_csv):
+                b = pd.read_csv(nyse_csv, index_col=0)
+                b.index = pd.to_datetime(b.index).normalize()
+                if (pd.Timestamp.now().normalize() - b.index[-1]).days <= 5:
+                    nyse_net = b['net']
+        except Exception:
+            nyse_net = None
+        if nyse_net is not None and len(nyse_net) > 60:
             hist.index = hist.index.tz_localize(None).normalize()
-            if net.index.tz is not None:
-                net.index = net.index.tz_localize(None)
-            net.index = net.index.normalize()
-            hist = hist.join(net.rename('Net_Issues'), how='left')
-            hist['Net_Issues'] = hist['Net_Issues'].ffill().fillna(0) * 20.0
-            hist['McClellan_Source'] = 'NDX-100 x20'
-            print("INFO: ^ADD unavailable - using real breadth from NDX-100 constituents (x20 NYSE-equivalent)")
+            hist = hist.join(nyse_net.rename('Net_Issues'), how='left')
+            hist['Net_Issues'] = hist['Net_Issues'].ffill().fillna(0)
+            hist['McClellan_Source'] = 'NYSE-2050 real'
+            print("INFO: using full NYSE real breadth (McClellanNYSE local database)")
         else:
-            print("WARNING: BREADTH FALLBACK ACTIVE - pseudo-breadth from QQQ price, NOT real breadth")
-            hist['Net_Issues'] = np.where(hist['Close'] > hist['Close'].shift(1), 1000, -1000)
-            hist['Net_Issues'].iloc[0] = 0
-            hist['McClellan_Source'] = 'FALLBACK'
+            net = get_breadth_series()
+            if net is not None and len(net) > 60:
+                hist.index = hist.index.tz_localize(None).normalize()
+                if net.index.tz is not None:
+                    net.index = net.index.tz_localize(None)
+                net.index = net.index.normalize()
+                hist = hist.join(net.rename('Net_Issues'), how='left')
+                hist['Net_Issues'] = hist['Net_Issues'].ffill().fillna(0) * 20.0
+                hist['McClellan_Source'] = 'NDX-100 x20'
+                print("INFO: ^ADD unavailable - using real breadth from NDX-100 constituents (x20 NYSE-equivalent)")
+            else:
+                print("WARNING: BREADTH FALLBACK ACTIVE - pseudo-breadth from QQQ price, NOT real breadth")
+                hist['Net_Issues'] = np.where(hist['Close'] > hist['Close'].shift(1), 1000, -1000)
+                hist['Net_Issues'].iloc[0] = 0
+                hist['McClellan_Source'] = 'FALLBACK'
     
     # McClellan Oscillator Calculation
     hist['EMA_19'] = hist['Net_Issues'].ewm(span=19, adjust=False).mean()
@@ -914,6 +931,7 @@ def create_charts(data):
     mc_source = hist['McClellan_Source'].iloc[-1] if 'McClellan_Source' in hist.columns else ''
     mc_title = {
         'NYSE ^ADD': 'McClellan Oscillator (EMA19-EMA39 of NYSE Net Issues)',
+        'NYSE-2050 real': 'McClellan Oscillator (EMA19-EMA39, NYSE Full Real Breadth ~2050 stocks)',
         'NDX-100 x20': 'McClellan Oscillator (EMA19-EMA39, NDX-100 Real Breadth x20 NYSE-eq)',
         'FALLBACK': '!! FALLBACK: NOT REAL BREADTH (price-derived)',
     }.get(mc_source, 'McClellan Oscillator (EMA19-EMA39)')
