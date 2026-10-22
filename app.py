@@ -15,6 +15,8 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
 import concurrent.futures # [Optimization] Parallel processing module
+import os
+import time
 
 
 
@@ -84,6 +86,40 @@ def fetch_ndx_breadth(period="2y"):
     df.index = df.index.tz_localize(None).normalize()
     chg = df.diff()
     return (chg > 0).sum(axis=1) - (chg < 0).sum(axis=1)
+
+BREADTH_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ndx_breadth_cache.csv")
+
+def get_breadth_series():
+    now_ny = pd.Timestamp.now(tz="America/New_York").normalize().tz_localize(None)
+    cached = None
+    if os.path.exists(BREADTH_CACHE_FILE):
+        try:
+            cached = pd.read_csv(BREADTH_CACHE_FILE, index_col=0).iloc[:, 0]
+            cached.index = pd.to_datetime(cached.index).normalize()
+        except Exception:
+            cached = None
+    stamp = BREADTH_CACHE_FILE + ".stamp"
+    if cached is not None and len(cached) > 60:
+        if cached.index[-1] >= now_ny:
+            return cached
+        if os.path.exists(stamp) and (time.time() - os.path.getmtime(stamp)) < 1800:
+            return cached
+    if cached is not None and len(cached) > 60:
+        fresh = fetch_ndx_breadth("1mo")
+        open(stamp, "w").close()
+        if fresh is not None and len(fresh) > 0:
+            fresh.index = fresh.index.tz_localize(None).normalize()
+            combined = pd.concat([cached, fresh])
+            combined = combined[~combined.index.duplicated(keep="last")].sort_index().tail(400)
+            combined.to_frame("net").to_csv(BREADTH_CACHE_FILE)
+            return combined
+        return cached
+    net = fetch_ndx_breadth("2y")
+    open(stamp, "w").close()
+    if net is None:
+        return None
+    net.to_frame("net").to_csv(BREADTH_CACHE_FILE)
+    return net
 
 @st.cache_data(ttl=1800)
 
@@ -199,9 +235,12 @@ def get_market_data():
         hist = hist.join(add_hist['Close'].rename('Net_Issues'), how='left')
         hist['Net_Issues'] = hist['Net_Issues'].ffill().fillna(0)
     else:
-        net = fetch_ndx_breadth("2y")
+        net = get_breadth_series()
         if net is not None and len(net) > 60:
-            net.index = net.index.tz_localize(None).normalize()
+            hist.index = hist.index.tz_localize(None).normalize()
+            if net.index.tz is not None:
+                net.index = net.index.tz_localize(None)
+            net.index = net.index.normalize()
             hist = hist.join(net.rename('Net_Issues'), how='left')
             hist['Net_Issues'] = hist['Net_Issues'].ffill().fillna(0) * 20.0
             hist['McClellan_Source'] = 'NDX-100 x20'
